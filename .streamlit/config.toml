@@ -1,0 +1,8 @@
+# Do NOT pin server.address to 127.0.0.1 here — that breaks Streamlit Cloud.
+# Local bind/port are set by run_app.sh CLI flags instead.
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+fastReruns = true

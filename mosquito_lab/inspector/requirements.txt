@@ -1,0 +1,13 @@
+# Detection Quality Inspector dependencies.
+# The lab .venv already has ultralytics, opencv, torch, pandas, numpy, pillow.
+# These two are the only extras the inspector adds:
+streamlit>=1.30
+pyarrow>=12
+
+# Full list (for a fresh environment):
+# ultralytics>=8.3
+# opencv-python>=4.8
+# torch>=2.0
+# pandas>=2.0
+# numpy>=1.24
+# pillow>=10

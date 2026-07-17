@@ -1,0 +1,8 @@
+# Mosquito Lab outputs
+mosquito-lab-output/
+mosquito-lab-work/
+**/videos/
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+.DS_Store

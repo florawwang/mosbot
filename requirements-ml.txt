@@ -1,0 +1,5 @@
+# Local inference (YOLO). Not used by Streamlit Cloud.
+-r requirements.txt
+ultralytics>=8.4.0
+torch>=2.0.0
+torchvision>=0.15.0

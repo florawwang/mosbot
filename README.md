@@ -2,7 +2,9 @@
 
 **mosbot** is a local web app for mosquito activity experiments: browse tracked frames, audit YOLO detections, and plot LD/DD actograms.
 
-Built for the Rijo-Ferreira Lab circadian / behavioral pipeline.
+Built for circadian pipeline.
+
+**Live app:** [https://mosbot.streamlit.app](https://mosbot.streamlit.app)
 
 ---
 
@@ -95,18 +97,10 @@ Background run:
 ./run_cloud.sh local "/path/to/raw_images" "/path/to/labels.csv" "/path/to/model.pt"
 ```
 
-### Detection inspector cache (optional, faster QA)
-
-```bash
-export PYTHONPATH="."
-python mosquito_lab/inspector/precompute.py --experiment "28" --stride 10
-```
-
-Use `--list` to see discoverable experiments. Details: [`mosquito_lab/inspector/README.md`](mosquito_lab/inspector/README.md).
-
----
 
 ## Deploy (Streamlit Community Cloud)
+
+Hosted at **[https://mosbot.streamlit.app](https://mosbot.streamlit.app)**.
 
 | Setting | Value |
 |---------|--------|
@@ -129,8 +123,3 @@ If the app fails to start, open **Manage app → Logs** on [share.streamlit.io](
 | Detection inspector needs YOLO | `pip install -r requirements-ml.txt`, then run `precompute.py` |
 | Wrong passcode | Ask a lab member, or set `CLOUD_VIEWER_PASSCODE` |
 
----
-
-## License & contact
-
-Internal lab tool. For access or questions, contact the Rijo-Ferreira Lab / repo maintainer.

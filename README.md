@@ -1,86 +1,121 @@
 # mosbot
 
-Browse frames, audit detections, and plot activity in one web app.
+**mosbot** is a local web app for mosquito activity experiments: browse tracked frames, audit YOLO detections, and plot LD/DD actograms.
 
-**Ask Flora for the password** (default is `florawang`).
+Built for the Rijo-Ferreira Lab circadian / behavioral pipeline.
 
 ---
 
-## Run locally
+## Features
+
+| Section | What it does |
+|---------|----------------|
+| **Frame images** | Scrub through timelapse frames with well crops and detection overlays |
+| **Detection inspector** | Check where YOLO misses mosquitoes (threshold slider, jump to misses, flag frames) |
+| **Activity graphs** | Actograms, LD/DD profiles, day/night totals, and stats from an activity CSV |
+
+---
+
+## Quick start
+
+**Requirements:** Python 3.10–3.12
 
 ```bash
-cd mosquito-lab
-pip install -r requirements.txt   # first time only
+git clone https://github.com/florawwang/mosbot.git
+cd mosbot
+pip install -r requirements.txt
 ./run_app.sh
 ```
 
-Open **http://127.0.0.1:8502** and enter the passcode. Stop with `Ctrl+C`.
+Open [http://127.0.0.1:8502](http://127.0.0.1:8502) and enter the lab passcode.
 
-If port 8502 is busy: `PORT=8503 ./run_app.sh` → **http://127.0.0.1:8503**
+Stop the app with `Ctrl+C`.
 
-Override passcode: `CLOUD_VIEWER_PASSCODE=yourcode ./run_app.sh`
-
-For YOLO inference / inspector cache builds: `pip install -r requirements-ml.txt`
-
----
-
-## App sections
-
-- **Frame images** — scrub detections (`frame_manifest.json`)
-- **Detection inspector** — YOLO QA (threshold slider, jump to misses, flag frames)
-- **Activity graphs** — actograms / LD–DD plots from an activity CSV
-
-Fast inspector cache (local):
+### Useful options
 
 ```bash
-PYTHONPATH=. python mosquito_lab/inspector/precompute.py --experiment "28" --stride 10
+# Different port if 8502 is taken
+PORT=8503 ./run_app.sh
+
+# Custom passcode for this session
+CLOUD_VIEWER_PASSCODE=yourcode ./run_app.sh
+```
+
+For YOLO inference and detection-cache builds (heavier deps):
+
+```bash
+pip install -r requirements-ml.txt
 ```
 
 ---
 
-## Streamlit Cloud
+## What files you need
 
-**Deploy settings:**
-- Main file: `streamlit_app.py` (preferred) or `mosquito_lab/lab_app.py`
-- Python: **3.10–3.12** (avoid 3.14 if installs get weird)
+| Input | Description |
+|-------|-------------|
+| **Raw images** | Folder of timelapse frames (`.jpg` / `.png`) |
+| **Labels CSV** | MakeSense well boxes (one row per mosquito) |
+| **YOLO model** | Detector weights (e.g. `uninf_det_v0.pt`) — local inference only |
 
-If you see **"Error running app"**:
+After inference you also get:
 
-1. Open [share.streamlit.io](https://share.streamlit.io) → your app → **Manage app** → **Logs**
-2. If logs say `No module named 'mosquito_lab'`, set Main file to `streamlit_app.py` and reboot
-3. Use saved CSVs / manifests on Cloud — live YOLO & cache builds need a laptop/VM
+- `activity_transposed.csv` — per-frame movement per mosquito  
+- `frame_manifest.json` — saved detection positions for fast browsing  
 
-App URL example: https://mosbot.streamlit.app
-
----
-
-## What you need
-
-| Input | Example |
-|-------|---------|
-| Raw images | `data/…/[29] raw_images/` |
-| Labels CSV | `MosquitoMovement2/experiments/…/exp29_labels.csv` |
-| YOLO model (local) | `MosquitoMovement2/models/uninf_det_v0.pt` |
-
-After inference: `activity_transposed.csv`, `frame_manifest.json`. Set paths in the sidebar.
+Set paths in the app sidebar (or use env vars / auto-discovery when nested in the lab data repo).
 
 ---
 
-## Run inference (local / VM, slow)
+## Typical workflow
+
+1. **Run inference** (laptop or VM — can take hours on CPU) → activity CSV + manifest  
+2. **Open mosbot** → browse frames, inspect detections, plot graphs  
+
+Skip step 1 if someone already shared an output folder with you.
+
+### Inference (local)
+
+From this repo:
 
 ```bash
-export PYTHONPATH="mosquito-lab:$PYTHONPATH"
-pip install -r mosquito-lab/requirements-ml.txt
+export PYTHONPATH="."
+pip install -r requirements-ml.txt
 
 python -m mosquito_lab.run_inference \
-  --image-folder "path/to/raw_images" \
-  --labels "path/to/labels.csv" \
-  --model "path/to/uninf_det_v0.pt" \
+  --image-folder "/path/to/raw_images" \
+  --labels "/path/to/labels.csv" \
+  --model "/path/to/uninf_det_v0.pt" \
   --output-dir ./mosquito-lab-output \
   --serve-viewer
 ```
 
-Or: `./run_cloud.sh local "/path/to/raw_images" "/path/to/labels.csv" "/path/to/model.pt"`
+Background run:
+
+```bash
+./run_cloud.sh local "/path/to/raw_images" "/path/to/labels.csv" "/path/to/model.pt"
+```
+
+### Detection inspector cache (optional, faster QA)
+
+```bash
+export PYTHONPATH="."
+python mosquito_lab/inspector/precompute.py --experiment "28" --stride 10
+```
+
+Use `--list` to see discoverable experiments. Details: [`mosquito_lab/inspector/README.md`](mosquito_lab/inspector/README.md).
+
+---
+
+## Deploy (Streamlit Community Cloud)
+
+| Setting | Value |
+|---------|--------|
+| Main file | `streamlit_app.py` |
+| Python | 3.10–3.12 |
+
+Live YOLO and cache builds are meant for a laptop/VM. On Cloud, upload saved CSVs and manifests.
+
+If the app fails to start, open **Manage app → Logs** on [share.streamlit.io](https://share.streamlit.io).
 
 ---
 
@@ -88,9 +123,14 @@ Or: `./run_cloud.sh local "/path/to/raw_images" "/path/to/labels.csv" "/path/to/
 
 | Problem | Fix |
 |---------|-----|
-| Error running app (Cloud) | Check Manage app → Logs; slim `requirements.txt`; reboot app |
-| App won't start locally | `pip install -r requirements.txt`; Python 3.10+ |
-| Port in use | `PORT=8503 ./run_app.sh` |
-| Inspector cache / YOLO missing | `pip install -r requirements-ml.txt` then run `precompute.py` |
-| No images / empty graphs | Check sidebar paths; upload CSV / run inference first |
-| Wrong passcode | Ask Flora, or set `CLOUD_VIEWER_PASSCODE` |
+| App won't start | `pip install -r requirements.txt`; use Python 3.10–3.12 |
+| Port already in use | `PORT=8503 ./run_app.sh` |
+| No images / empty graphs | Check sidebar paths; load a CSV or run inference first |
+| Detection inspector needs YOLO | `pip install -r requirements-ml.txt`, then run `precompute.py` |
+| Wrong passcode | Ask a lab member, or set `CLOUD_VIEWER_PASSCODE` |
+
+---
+
+## License & contact
+
+Internal lab tool. For access or questions, contact the Rijo-Ferreira Lab / repo maintainer.

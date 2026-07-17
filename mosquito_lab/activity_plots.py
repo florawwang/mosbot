@@ -158,92 +158,6 @@ def default_plot_style() -> PlotStyle:
     return PlotStyle()
 
 
-def _style_override_widgets(fig_id: str, base: PlotStyle) -> PlotStyle:
-    """Per-figure style controls (meant to live inside a popover)."""
-    st.markdown("**Edit this figure only**")
-    st.caption("Leave a field blank to keep the shared default.")
-
-    st.markdown("##### Labels")
-    title = st.text_input(
-        "Title",
-        value="",
-        key=f"{fig_id}_ov_title",
-        placeholder=base.graph_title or "e.g. ClockKO LD actogram",
-        help="Overrides the title for this figure only.",
-    )
-    xlabel = st.text_input(
-        "X-axis label",
-        value="",
-        key=f"{fig_id}_ov_xlabel",
-        placeholder=base.xlabel or "leave blank for default",
-    )
-    ylabel = st.text_input(
-        "Y-axis label",
-        value="",
-        key=f"{fig_id}_ov_ylabel",
-        placeholder=base.ylabel or "leave blank for default",
-    )
-
-    st.markdown("##### Size")
-    c1, c2 = st.columns(2)
-    with c1:
-        width_scale = st.slider(
-            "Wider ↔ narrower",
-            0.5,
-            2.5,
-            float(base.width_scale),
-            0.05,
-            key=f"{fig_id}_ov_w",
-            help=f"1.0 = shared default (currently {base.width_scale:.2f})",
-        )
-    with c2:
-        height_scale = st.slider(
-            "Taller ↔ shorter",
-            0.5,
-            2.5,
-            float(base.height_scale),
-            0.05,
-            key=f"{fig_id}_ov_h",
-            help=f"1.0 = shared default (currently {base.height_scale:.2f})",
-        )
-
-    st.markdown("##### Text size")
-    font_size = st.slider(
-        "Body text",
-        6,
-        20,
-        int(base.font_size),
-        key=f"{fig_id}_ov_fs",
-        help="Axis numbers and labels scale with this.",
-    )
-    title_size = st.slider(
-        "Title text",
-        8,
-        28,
-        int(base.title_size),
-        key=f"{fig_id}_ov_ts",
-    )
-    return base.overridden(
-        graph_title=title or None,
-        xlabel=xlabel or None,
-        ylabel=ylabel or None,
-        width_scale=width_scale,
-        height_scale=height_scale,
-        font_size=float(font_size),
-        title_size=float(title_size),
-        label_size=float(font_size) + 1,
-        tick_size=max(5.0, float(font_size) - 1),
-    )
-
-
-def fig_local_style(fig_id: str, base: PlotStyle) -> PlotStyle:
-    """Per-figure style popover (standalone, when no help bubble is needed)."""
-    _inject_fig_header_css()
-    with st.popover("Style"):
-        out = _style_override_widgets(fig_id, base)
-    return out
-
-
 def _md_inline_to_html(text: str) -> str:
     """Minimal markdown → HTML for hover tips (bold, code, bullets, paragraphs)."""
     text = text.strip()
@@ -420,33 +334,17 @@ def _title_with_help(
 def fig_header(
     title: str,
     *,
-    fig_id: str,
-    base_style: PlotStyle,
+    fig_id: str = "",
+    base_style: PlotStyle | None = None,
     what: str = "",
     how: str = "",
     ask: str | None = None,
     level: str = "###",
-    customize: bool = True,
-) -> PlotStyle:
-    """
-    Clean figure title: hover '?' help (like Streamlit widget help) + Style.
-    Returns the (possibly overridden) PlotStyle for this figure.
-    """
-    _inject_fig_header_css()
-    if customize:
-        title_col, cust_col = st.columns([0.88, 0.12], vertical_alignment="center")
-    else:
-        _title_with_help(title, what=what, how=how, ask=ask, level=level)
-        return base_style
-
-    with title_col:
-        _title_with_help(title, what=what, how=how, ask=ask, level=level)
-
-    style_out = base_style
-    with cust_col:
-        with st.popover("Style"):
-            style_out = _style_override_widgets(fig_id, base_style)
-    return style_out
+    customize: bool = False,
+) -> None:
+    """Figure title with hover '?' help. Style comes from the sidebar only."""
+    _ = (fig_id, base_style, customize)  # kept for call-site compatibility
+    _title_with_help(title, what=what, how=how, ask=ask, level=level)
 
 
 def fig_guide(what: str, how: str, ask: str | None = None) -> None:
@@ -1824,10 +1722,8 @@ def render_graphs_sidebar() -> dict:
     )
 
     st.sidebar.markdown("#### Plot style")
-    st.sidebar.caption(
-        "Shared defaults live in **Plot style for all graphs** above the figures. "
-        "Use **Style** next to a figure to change just that one."
-    )
+    st.sidebar.caption("Applies to every figure on this page.")
+    style = render_plot_style_controls()
 
     return {
         "uploaded": uploaded,
@@ -1835,110 +1731,90 @@ def render_graphs_sidebar() -> dict:
         "bin_size": bin_size,
         "period": period,
         "ld_end": ld_end,
+        "style": style,
     }
 
 
 def render_plot_style_controls() -> PlotStyle:
-    """Main-panel controls for titles, fonts, and figure size."""
-    with st.expander("Plot style for all graphs", expanded=False):
-        st.caption(
-            "These settings apply to every figure. "
-            "Open **Style** next to a figure if you only want to change that one."
-        )
+    """Sidebar controls for titles, fonts, and figure size."""
+    graph_title = st.sidebar.text_input(
+        "Graph title",
+        value="",
+        placeholder="e.g. ClockKO rep6 box1",
+        key="g_graph_title",
+    )
+    xlabel = st.sidebar.text_input(
+        "X-axis label (optional)",
+        value="",
+        placeholder="leave blank for figure default",
+        key="g_xlabel",
+    )
+    ylabel = st.sidebar.text_input(
+        "Y-axis label (optional)",
+        value="",
+        placeholder="leave blank for figure default",
+        key="g_ylabel",
+    )
+    font_family = st.sidebar.selectbox(
+        "Font",
+        FONT_CHOICES,
+        index=0,
+        key="g_font_family",
+    )
+    width_scale = st.sidebar.slider(
+        "Figure width",
+        min_value=0.5,
+        max_value=2.5,
+        value=1.0,
+        step=0.05,
+        key="g_width_scale",
+    )
+    height_scale = st.sidebar.slider(
+        "Figure height",
+        min_value=0.5,
+        max_value=2.5,
+        value=1.0,
+        step=0.05,
+        key="g_height_scale",
+    )
+    font_size = st.sidebar.slider(
+        "Body text size",
+        min_value=6,
+        max_value=20,
+        value=10,
+        key="g_font_size",
+    )
+    title_size = st.sidebar.slider(
+        "Title size",
+        min_value=8,
+        max_value=28,
+        value=14,
+        key="g_title_size",
+    )
+    label_size = st.sidebar.slider(
+        "Axis label size",
+        min_value=6,
+        max_value=22,
+        value=11,
+        key="g_label_size",
+    )
+    tick_size = st.sidebar.slider(
+        "Tick number size",
+        min_value=5,
+        max_value=18,
+        value=9,
+        key="g_tick_size",
+    )
 
-        tab_text, tab_size, tab_font = st.tabs(["Labels", "Size", "Font"])
-
-        with tab_text:
-            graph_title = st.text_input(
-                "Shared graph title",
+    with st.sidebar.expander("Rename groups on plots", expanded=False):
+        st.caption("Blank keeps the names from the mosquito-kind layout.")
+        group_title_overrides: dict[str, str] = {}
+        for kind in MOSQUITO_KINDS:
+            group_title_overrides[kind] = st.text_input(
+                kind,
                 value="",
-                placeholder="e.g. ClockKO rep6 box1",
-                key="g_graph_title",
-                help="Shown on figures that use the shared title.",
-            )
-            c1, c2 = st.columns(2)
-            with c1:
-                xlabel = st.text_input(
-                    "Shared X-axis label",
-                    value="",
-                    placeholder="leave blank for each figure's default",
-                    key="g_xlabel",
-                )
-            with c2:
-                ylabel = st.text_input(
-                    "Shared Y-axis label",
-                    value="",
-                    placeholder="leave blank for each figure's default",
-                    key="g_ylabel",
-                )
-
-            st.markdown("**Rename groups on plots** (optional)")
-            st.caption("Blank keeps the names from the mosquito-kind layout.")
-            gcols = st.columns(2)
-            group_title_overrides: dict[str, str] = {}
-            for i, kind in enumerate(MOSQUITO_KINDS):
-                with gcols[i % 2]:
-                    group_title_overrides[kind] = st.text_input(
-                        kind,
-                        value="",
-                        key=f"g_title_{kind}",
-                        placeholder=kind,
-                    )
-
-        with tab_size:
-            width_scale = st.slider(
-                "Figure width",
-                min_value=0.5,
-                max_value=2.5,
-                value=1.0,
-                step=0.05,
-                key="g_width_scale",
-                help="1.0 is the default width. Drag right to make figures wider.",
-            )
-            height_scale = st.slider(
-                "Figure height",
-                min_value=0.5,
-                max_value=2.5,
-                value=1.0,
-                step=0.05,
-                key="g_height_scale",
-                help="1.0 is the default height. Drag right to make figures taller.",
-            )
-
-        with tab_font:
-            font_family = st.selectbox(
-                "Font",
-                FONT_CHOICES,
-                index=0,
-                key="g_font_family",
-            )
-            font_size = st.slider(
-                "Body text size",
-                min_value=6,
-                max_value=20,
-                value=10,
-                key="g_font_size",
-            )
-            title_size = st.slider(
-                "Title size",
-                min_value=8,
-                max_value=28,
-                value=14,
-                key="g_title_size",
-            )
-            label_size = st.slider(
-                "Axis label size",
-                min_value=6,
-                max_value=22,
-                value=11,
-                key="g_label_size",
-            )
-            tick_size = st.slider(
-                "Tick number size",
-                min_value=5,
-                max_value=18,
-                value=9,
-                key="g_tick_size",
+                key=f"g_title_{kind}",
+                placeholder=kind,
             )
 
     return PlotStyle(
@@ -2064,7 +1940,7 @@ def render_activity_graphs_body(settings: dict) -> None:
         f"(≈ {trace_len} h at bin size {int(bin_size)}) from `{label}`."
     )
 
-    style = render_plot_style_controls()
+    style = settings.get("style") or default_plot_style()
     if style.graph_title.strip():
         st.markdown(f"## {style.graph_title.strip()}")
 
@@ -2098,7 +1974,7 @@ def render_activity_graphs_body(settings: dict) -> None:
     )
 
     with sec_a:
-        s1 = fig_header(
+        fig_header(
             "Fig 1 — Individual actograms (pre-death-cut)",
             fig_id="fig1",
             base_style=style,
@@ -2115,10 +1991,10 @@ def render_activity_graphs_body(settings: dict) -> None:
             counts, groups, group_colors, idx_to_label, start_zt, period_i, ld_end_i,
             death_bins, apply_deaths=False,
             title="Individual actograms (pre-death-cut)", key="fig1",
-            style=s1,
+            style=style,
         )
         st.divider()
-        s2 = fig_header(
+        fig_header(
             "Fig 2 — Individual actograms (death-cut)",
             fig_id="fig2",
             base_style=style,
@@ -2134,10 +2010,10 @@ def render_activity_graphs_body(settings: dict) -> None:
             counts, groups, group_colors, idx_to_label, start_zt, period_i, ld_end_i,
             death_bins, apply_deaths=True,
             title="Individual actograms (death-cut)", key="fig2",
-            style=s2,
+            style=style,
         )
         st.divider()
-        s3 = fig_header(
+        fig_header(
             "Fig 3 — Death comparison",
             fig_id="fig3",
             base_style=style,
@@ -2151,7 +2027,7 @@ def render_activity_graphs_body(settings: dict) -> None:
         )
         means_death = death_comparison(
             counts, groups, group_colors, start_zt, period_i, ld_end_i,
-            death_bins, key="fig3", style=s3,
+            death_bins, key="fig3", style=style,
         )
 
     with sec_b:
@@ -2159,7 +2035,7 @@ def render_activity_graphs_body(settings: dict) -> None:
             "**LD (light–dark)** = bins before the LD→DD switch. "
             "Day = unshaded ZT half (ZT 0–period/2); night = grey band (ZT period/2–period)."
         )
-        s4 = fig_header(
+        fig_header(
             "Fig 4 — Full LD period",
             fig_id="fig4",
             base_style=style,
@@ -2175,10 +2051,10 @@ def render_activity_graphs_body(settings: dict) -> None:
             counts, groups, group_colors, start_zt, period_i,
             lo=0, hi=ld_end_i, ld_end=ld_end_i,
             title="Full LD period, averaged across mosquitoes",
-            xlabel="ZT / experimental hour", key="fig4", style=s4,
+            xlabel="ZT / experimental hour", key="fig4", style=style,
         )
         st.divider()
-        s5 = fig_header(
+        fig_header(
             "Fig 5 — LD, 24 h-folded",
             fig_id="fig5",
             base_style=style,
@@ -2192,10 +2068,10 @@ def render_activity_graphs_body(settings: dict) -> None:
         )
         folded_bar(
             counts, groups, group_colors, start_zt, period_i,
-            lo=0, hi=ld_end_i, title="LD, 24 h-folded", key="fig5", style=s5,
+            lo=0, hi=ld_end_i, title="LD, 24 h-folded", key="fig5", style=style,
         )
         st.divider()
-        s6 = fig_header(
+        fig_header(
             "Fig 6 — LD mean ± 1 SD",
             fig_id="fig6",
             base_style=style,
@@ -2209,7 +2085,7 @@ def render_activity_graphs_body(settings: dict) -> None:
         folded_line(
             counts, groups, group_colors, start_zt, period_i,
             lo=0, hi=ld_end_i, title="LD (24 h-folded) mean ± 1 SD", key="fig6",
-            style=s6,
+            style=style,
         )
 
     with sec_c:
@@ -2223,7 +2099,7 @@ def render_activity_graphs_body(settings: dict) -> None:
             "Incubator stays dark; **DD day / DD night** still follow the same ZT bands as the grey shading "
             "(subjective day = unshaded, subjective night = grey)."
         )
-        s7 = fig_header(
+        fig_header(
             "Fig 7 — Full DD period",
             fig_id="fig7",
             base_style=style,
@@ -2240,10 +2116,10 @@ def render_activity_graphs_body(settings: dict) -> None:
             lo=ld_end_i, hi=None, ld_end=ld_end_i,
             title="Full DD period, averaged across mosquitoes",
             xlabel="Experimental hour", key="fig7", means_override=means_death,
-            style=s7,
+            style=style,
         )
         st.divider()
-        s8 = fig_header(
+        fig_header(
             "Fig 8 — DD, 24 h-folded",
             fig_id="fig8",
             base_style=style,
@@ -2256,10 +2132,10 @@ def render_activity_graphs_body(settings: dict) -> None:
         )
         folded_bar(
             counts, groups, group_colors, start_zt, period_i,
-            lo=ld_end_i, hi=None, title="DD, 24 h-folded", key="fig8", style=s8,
+            lo=ld_end_i, hi=None, title="DD, 24 h-folded", key="fig8", style=style,
         )
         st.divider()
-        s9 = fig_header(
+        fig_header(
             "Fig 9 — DD mean ± 1 SD",
             fig_id="fig9",
             base_style=style,
@@ -2273,7 +2149,7 @@ def render_activity_graphs_body(settings: dict) -> None:
         folded_line(
             counts, groups, group_colors, start_zt, period_i,
             lo=ld_end_i, hi=None, title="DD (24 h-folded) mean ± 1 SD", key="fig9",
-            style=s9,
+            style=style,
         )
 
     with sec_d:
@@ -2301,7 +2177,7 @@ def render_activity_graphs_body(settings: dict) -> None:
         totals_display = totals.copy()
         totals_display["group"] = totals_display["group"].map(style.display_group)
 
-        s10 = fig_header(
+        fig_header(
             "Mean ± 1 SD by phase",
             fig_id="fig10_phase",
             base_style=style,
@@ -2314,9 +2190,9 @@ def render_activity_graphs_body(settings: dict) -> None:
 """,
             ask="Is night activity higher than day activity in every genotype?",
         )
-        phase_totals_figure(totals, groups, group_colors, s10, key="fig10_phase")
+        phase_totals_figure(totals, groups, group_colors, style, key="fig10_phase")
 
-        s10b = fig_header(
+        fig_header(
             "Per-mosquito distribution (box + points)",
             fig_id="fig10_box",
             base_style=style,
@@ -2329,7 +2205,7 @@ def render_activity_graphs_body(settings: dict) -> None:
 """,
             ask="Are group differences driven by most mosquitoes, or one outlier?",
         )
-        phase_totals_box_figure(totals, groups, s10b, key="fig10_box")
+        phase_totals_box_figure(totals, groups, style, key="fig10_box")
 
         with st.expander("Per-mosquito totals table", expanded=False):
             show_cols = [c for c in totals_display.columns if c != "mosquito_idx"]
@@ -2373,7 +2249,7 @@ def render_activity_graphs_body(settings: dict) -> None:
         )
         st.dataframe(within_display, use_container_width=True)
 
-        s10h = fig_header(
+        fig_header(
             "Between-group comparisons",
             fig_id="fig10_heat",
             base_style=style,
@@ -2388,7 +2264,7 @@ def render_activity_graphs_body(settings: dict) -> None:
             ask="Which pairwise genotype/sex contrasts are significant in LD night vs DD night?",
         )
         between = between_group_phase_tests(totals)
-        stats_heatmap_figure(between, s10h, key="fig10_heat")
+        stats_heatmap_figure(between, style, key="fig10_heat")
         with st.expander("Full between-group stats table", expanded=False):
             between_display = between.copy()
             between_display["p"] = between_display["p"].map(
@@ -2417,7 +2293,7 @@ def render_activity_graphs_body(settings: dict) -> None:
             customize=False,
             what="Pick any two figures to view side-by-side or stacked, then download as one PNG.",
             how="""
-- Uses **Plot style for all graphs**, plus **Style** on each slot below.
+- Uses the **Plot style** controls in the sidebar.
 - Best for related plots (e.g. LD folded vs DD folded, or mean bars vs boxplots).
 - Individual actograms (Figs 1–2) are omitted here because they are multi-page grids.
 """,
@@ -2439,7 +2315,6 @@ def render_activity_graphs_body(settings: dict) -> None:
                 index=labels.index(COMPARE_LABELS["fig5"]),
                 key="compare_left",
             )
-            style_left = fig_local_style("compare_left", style)
         with c2:
             right_label = st.selectbox(
                 "Right / bottom graph",
@@ -2447,7 +2322,6 @@ def render_activity_graphs_body(settings: dict) -> None:
                 index=labels.index(COMPARE_LABELS["fig8"]),
                 key="compare_right",
             )
-            style_right = fig_local_style("compare_right", style)
         with c3:
             layout = st.radio(
                 "Layout",
@@ -2471,7 +2345,7 @@ def render_activity_graphs_body(settings: dict) -> None:
                 death_bins=death_bins,
                 means_death=means_death,
                 totals=totals,
-                style=style_left,
+                style=style,
             )
             fig_right = build_selected_figure(
                 right_id,
@@ -2484,7 +2358,7 @@ def render_activity_graphs_body(settings: dict) -> None:
                 death_bins=death_bins,
                 means_death=means_death,
                 totals=totals,
-                style=style_right,
+                style=style,
             )
         except Exception as exc:
             st.error(f"Could not build compare view: {exc}")

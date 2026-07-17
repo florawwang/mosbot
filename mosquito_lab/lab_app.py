@@ -95,7 +95,7 @@ def main() -> None:
     else:
         st.caption(
             "Activity analysis graphs. Hover the **?** next to a figure title for help; "
-            "use **Style** to change labels, size, or fonts."
+            "use the **Plot style** sidebar to change labels, size, or fonts."
         )
         render_activity_graphs_body(settings)
 

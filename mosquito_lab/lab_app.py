@@ -4,7 +4,7 @@ mosbot — frame viewer, detection inspector, and activity graphs.
 Run:
     streamlit run mosquito_lab/lab_app.py --server.port 8502
 
-Passcode default: florawang
+Passcode: set CLOUD_VIEWER_PASSCODE or .streamlit/secrets.toml (never commit secrets).
 """
 
 from __future__ import annotations
@@ -29,13 +29,38 @@ from mosquito_lab.frame_viewer import (
 )
 from mosquito_lab.inspector.app import render_inspector_body, render_inspector_sidebar
 
-DEFAULT_PASSCODE = os.environ.get("CLOUD_VIEWER_PASSCODE", "florawang")
+
+def get_passcode() -> str | None:
+    """Read passcode from env or Streamlit secrets — never hardcode in the repo."""
+    env = (os.environ.get("CLOUD_VIEWER_PASSCODE") or "").strip()
+    if env:
+        return env
+    try:
+        # secrets.toml / Streamlit Cloud secrets (not in git)
+        if "CLOUD_VIEWER_PASSCODE" in st.secrets:
+            return str(st.secrets["CLOUD_VIEWER_PASSCODE"]).strip()
+        if "passcode" in st.secrets:
+            return str(st.secrets["passcode"]).strip()
+    except Exception:
+        pass
+    return None
 
 
-def check_auth(passcode: str) -> bool:
+def check_auth(passcode: str | None) -> bool:
     if st.session_state.get("authenticated"):
         return True
+
     st.title("mosbot")
+    if not passcode:
+        st.error("Passcode is not configured.")
+        st.markdown(
+            "Set **`CLOUD_VIEWER_PASSCODE`** in the environment, or add it to "
+            "**.streamlit/secrets.toml** / Streamlit Cloud → **Settings → Secrets**.\n\n"
+            "Example `secrets.toml` (do not commit this file):\n\n"
+            "```toml\nCLOUD_VIEWER_PASSCODE = \"your-secret\"\n```"
+        )
+        return False
+
     st.caption(
         "Frame viewer, detection inspector, and activity graphs. "
         "Enter the passcode to continue."
@@ -55,7 +80,7 @@ def check_auth(passcode: str) -> bool:
 def main() -> None:
     st.set_page_config(page_title="mosbot", layout="wide", page_icon="🦟")
 
-    if not check_auth(DEFAULT_PASSCODE):
+    if not check_auth(get_passcode()):
         return
 
     paths = resolve_paths()

@@ -21,8 +21,9 @@ import pandas as pd
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 
+from mosquito_lab.data_sources import resolve_local_or_drive
 from mosquito_lab.inspector import inspector_core as core
-from mosquito_lab.paths import mosquito_project_dir
+from mosquito_lab.paths import mosquito_project_dir, product_root
 
 # Colors (RGB).
 C_WELL = (120, 120, 120)
@@ -30,6 +31,73 @@ C_DETECTED = (46, 204, 113)  # green — detected at current threshold
 C_MISSED = (231, 76, 60)  # red — missed at current threshold
 C_CANDIDATE = (241, 196, 15)  # yellow — below threshold but above floor
 C_FOCUS = (52, 152, 219)  # blue — focused well
+
+INSPECTOR_WORK = product_root() / "mosquito_lab_work" / "inspector"
+
+
+def _clean_src(value: str) -> str:
+    return (value or "").strip().strip("\"'")
+
+
+@st.cache_data(show_spinner="Downloading / resolving Drive assets…")
+def _resolve_inspector_sources(
+    img_src: str,
+    lbl_src: str,
+    mdl_src: str,
+    cache_src: str,
+) -> dict[str, str]:
+    """Resolve local paths or Drive URLs into local filesystem paths."""
+    work = INSPECTOR_WORK
+    work.mkdir(parents=True, exist_ok=True)
+
+    image_folder = resolve_local_or_drive(
+        img_src, work, "raw_images", label="images", expect="images"
+    )
+    label_file = resolve_local_or_drive(
+        lbl_src, work, "labels", label="labels", expect="file"
+    )
+
+    model_path = ""
+    if _clean_src(mdl_src):
+        model_path = str(
+            resolve_local_or_drive(
+                mdl_src, work, "model", label="model", expect="file"
+            )
+        )
+
+    # Optional: download a prebuilt detections.parquet into the image cache dir
+    if _clean_src(cache_src):
+        cache_dir = Path(image_folder) / ".detection_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cached = resolve_local_or_drive(
+            cache_src, work, "detection_cache", label="cache", expect="file"
+        )
+        dest = cache_dir / "detections.parquet"
+        if cached.resolve() != dest.resolve():
+            import shutil
+
+            shutil.copy2(cached, dest)
+        # minimal meta so the UI can list processed frames
+        meta_path = cache_dir / "cache_meta.json"
+        if not meta_path.is_file():
+            import json
+
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "conf_floor": 0.01,
+                        "note": "meta synthesized after Drive cache download",
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+    return {
+        "image_folder": str(image_folder),
+        "label_file": str(label_file),
+        "model_path": model_path,
+    }
 
 
 @st.cache_data(show_spinner=False)
@@ -115,7 +183,7 @@ def select_experiment() -> core.Experiment | None:
     st.sidebar.markdown("#### Experiment")
     discovered = core.discover_experiments()
     names = [e.name for e in discovered]
-    options = names + ["Custom path..."]
+    options = names + ["Custom path / Google Drive..."]
     choice = st.sidebar.selectbox(
         "Choose experiment",
         options,
@@ -123,19 +191,84 @@ def select_experiment() -> core.Experiment | None:
         key="insp_experiment",
     )
 
-    if choice == "Custom path...":
-        img = st.sidebar.text_input("Raw images folder", key="insp_img")
-        lbl = st.sidebar.text_input("Labels CSV", key="insp_lbl")
-        default_model = str(mosquito_project_dir() / "models" / "uninf_det_v0.pt")
-        mdl = st.sidebar.text_input("YOLO model (.pt)", value=default_model, key="insp_mdl")
-        if not (img and lbl and mdl):
-            st.sidebar.info("Enter image folder, labels CSV, and model path.")
-            return None
-        return core.Experiment(
-            name="custom", image_folder=img, label_file=lbl, model_path=mdl
-        )
+    if choice != "Custom path / Google Drive...":
+        return discovered[names.index(choice)]
 
-    return discovered[names.index(choice)]
+    st.sidebar.caption(
+        "Paste a **local path** or a **Google Drive link**. "
+        "Drive items must be shareable for download "
+        "(typically “Anyone with the link” → Viewer)."
+    )
+    img = _clean_src(
+        st.sidebar.text_input(
+            "Raw images (folder path or Drive folder URL)",
+            key="insp_img",
+            placeholder="https://drive.google.com/drive/folders/…",
+        )
+    )
+    lbl = _clean_src(
+        st.sidebar.text_input(
+            "Labels CSV (file path or Drive file URL)",
+            key="insp_lbl",
+            placeholder="https://drive.google.com/file/d/…/view",
+        )
+    )
+    default_model = str(mosquito_project_dir() / "models" / "uninf_det_v0.pt")
+    mdl = _clean_src(
+        st.sidebar.text_input(
+            "YOLO model .pt (optional if cache exists)",
+            value=default_model if Path(default_model).is_file() else "",
+            key="insp_mdl",
+            placeholder="Drive file URL or local .pt",
+        )
+    )
+    cache_src = _clean_src(
+        st.sidebar.text_input(
+            "Prebuilt detection cache (optional)",
+            key="insp_cache",
+            placeholder="Drive/local detections.parquet",
+            help=(
+                "From a local `precompute.py` run. "
+                "Or put `.detection_cache/` inside the images Drive folder."
+            ),
+        )
+    )
+
+    if not (img and lbl):
+        st.sidebar.info("Enter raw images + labels (path or Drive URL).")
+        return None
+
+    srcs = (img, lbl, mdl, cache_src)
+    load = st.sidebar.button(
+        "Load paths / download from Drive",
+        type="primary",
+        key="insp_load_sources",
+    )
+
+    if load:
+        try:
+            resolved = _resolve_inspector_sources(img, lbl, mdl, cache_src)
+            exp = core.Experiment(
+                name="custom",
+                image_folder=resolved["image_folder"],
+                label_file=resolved["label_file"],
+                model_path=resolved["model_path"],
+            )
+            st.session_state["insp_resolved_exp"] = exp
+            st.session_state["insp_resolve_srcs"] = srcs
+            st.sidebar.success("Sources loaded.")
+        except Exception as exc:
+            st.sidebar.error(f"Could not load sources: {exc}")
+            return None
+
+    exp = st.session_state.get("insp_resolved_exp")
+    if exp is None:
+        st.sidebar.caption("Click **Load paths / download from Drive** when ready.")
+        return None
+    if st.session_state.get("insp_resolve_srcs") != srcs:
+        st.sidebar.warning("Inputs changed — click **Load** again.")
+        return None
+    return exp
 
 
 def ensure_cache(exp: core.Experiment) -> bool:
@@ -147,10 +280,22 @@ def ensure_cache(exp: core.Experiment) -> bool:
     st.warning(f"No detection cache found for **{exp.name}**.")
     missing = [k for k in ("image_folder", "label_file", "model_path") if not checks[k]]
     if missing:
-        st.error(f"Cannot build a cache — missing paths: {missing}")
+        st.error("Cannot build a cache — these paths were not found on this machine:")
+        path_map = {
+            "image_folder": exp.image_folder,
+            "label_file": exp.label_file,
+            "model_path": exp.model_path,
+        }
+        for key in missing:
+            st.code(f"{key}: {path_map[key]}")
         st.info(
-            "On Streamlit Cloud, upload a prebuilt `.detection_cache/` or run "
-            "`precompute.py` locally (needs `pip install -r requirements-ml.txt`)."
+            "**Local paths:** check the folders/files exist on this machine.\n\n"
+            "**Google Drive:** share as Viewer (Anyone with the link), then click "
+            "**Load paths / download from Drive** again.\n\n"
+            "**Cloud tip:** upload a prebuilt `detections.parquet` (from local "
+            "`precompute.py`) in the cache field, or include `.detection_cache/` "
+            "inside the images Drive folder — building YOLO on Streamlit Cloud "
+            "is usually too heavy (`pip install -r requirements-ml.txt` on a laptop)."
         )
         return False
 

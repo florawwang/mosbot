@@ -152,8 +152,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     viewer.add_argument(
         "--passcode",
-        default=os.environ.get("CLOUD_VIEWER_PASSCODE", "florawang"),
-        help="Viewer login passcode (default: florawang)",
+        default=os.environ.get("CLOUD_VIEWER_PASSCODE") or "",
+        help="Viewer login passcode (set CLOUD_VIEWER_PASSCODE; do not hardcode)",
     )
 
     return p
@@ -205,6 +205,12 @@ def main(argv: list[str] | None = None) -> int:
 
     viewer_proc: subprocess.Popen | None = None
     if args.serve_viewer:
+        if not (args.passcode or "").strip():
+            print(
+                "Error: --serve-viewer requires --passcode or CLOUD_VIEWER_PASSCODE",
+                file=sys.stderr,
+            )
+            return 2
         viewer_proc = _start_viewer(
             passcode=args.passcode,
             port=args.viewer_port,
@@ -237,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
                 result["status_file"],
                 viewer_url=viewer_url,
             )
-            print(f"\nViewer (passcode: {args.passcode}): {viewer_url}")
+            print(f"\nViewer: {viewer_url} (passcode required — set via CLOUD_VIEWER_PASSCODE)")
             print("Leave this process running (or nohup it) so the viewer stays up.")
             if viewer_proc:
                 viewer_proc.wait()

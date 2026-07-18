@@ -21,7 +21,16 @@ OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/mosquito-lab-output}"
 WORK_DIR="${WORK_DIR:-$REPO_ROOT/mosquito-lab-work}"
 LOG_FILE="${LOG_FILE:-$OUTPUT_DIR/inference.log}"
 VIEWER_PORT="${VIEWER_PORT:-8502}"
-PASSCODE="${CLOUD_VIEWER_PASSCODE:-florawang}"
+PASSCODE="${CLOUD_VIEWER_PASSCODE:-}"
+if [[ -z "$PASSCODE" && -f "$PRODUCT_DIR/.env" ]]; then
+  # shellcheck disable=SC1091
+  set -a; source "$PRODUCT_DIR/.env"; set +a
+  PASSCODE="${CLOUD_VIEWER_PASSCODE:-}"
+fi
+if [[ -z "$PASSCODE" ]]; then
+  echo "Error: set CLOUD_VIEWER_PASSCODE (env or .env) before launching the viewer."
+  exit 1
+fi
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -57,5 +66,4 @@ fi
 echo "Logging to $LOG_FILE"
 nohup "${CMD[@]}" > "$LOG_FILE" 2>&1 &
 echo "Started PID $! — tail -f $LOG_FILE"
-echo "Viewer passcode: $PASSCODE"
-echo "Viewer port: $VIEWER_PORT"
+echo "Viewer port: $VIEWER_PORT (passcode set via CLOUD_VIEWER_PASSCODE)"

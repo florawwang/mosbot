@@ -31,17 +31,27 @@ pip install -r requirements.txt
 
 Open [http://127.0.0.1:8502](http://127.0.0.1:8502) and enter the lab passcode.
 
-Stop the app with `Ctrl+C`.
+### Passcode (keep this out of git)
 
-### Useful options
+The unlock code is **not** stored in the public repo. Configure it one of these ways:
 
-```bash
-# Different port if 8502 is taken
-PORT=8503 ./run_app.sh
+1. **Local file** (recommended for laptop):
+   ```bash
+   cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+   # edit secrets.toml and set CLOUD_VIEWER_PASSCODE
+   ```
+2. **Environment variable:**
+   ```bash
+   CLOUD_VIEWER_PASSCODE=yourcode ./run_app.sh
+   ```
+3. **Streamlit Cloud:** App → **Settings → Secrets** → paste:
+   ```toml
+   CLOUD_VIEWER_PASSCODE = "yourcode"
+   ```
 
-# Custom passcode for this session
-CLOUD_VIEWER_PASSCODE=yourcode ./run_app.sh
-```
+Ask a lab member for the current passcode.
+
+Stop the app with `Ctrl+C`. If port 8502 is busy: `PORT=8503 ./run_app.sh`
 
 For YOLO inference and detection-cache builds (heavier deps):
 
@@ -74,6 +84,21 @@ Set paths in the app sidebar (or use env vars / auto-discovery when nested in th
 2. **Open mosbot** → browse frames, inspect detections, plot graphs  
 
 Skip step 1 if someone already shared an output folder with you.
+
+### Detection inspector + Google Drive
+
+In **Detection inspector** → **Custom path / Google Drive...** paste a local path **or** a Drive share link:
+
+| Field | What to share |
+|-------|----------------|
+| Raw images | Drive **folder** of `.jpg` frames (optionally including `.detection_cache/`) |
+| Labels CSV | Drive **file** link to `exp##_labels.csv` |
+| YOLO model | Optional Drive `.pt` — only needed to *build* a cache |
+| Prebuilt cache | Optional Drive/local `detections.parquet` from `precompute.py` |
+
+Click **Load paths / download from Drive**. Shares should allow download (e.g. Viewer + “Anyone with the link”).
+
+**Cloud tip:** prefer a prebuilt cache (or cache inside the images folder). Building YOLO on Streamlit Cloud is usually too heavy — run `precompute.py` on a laptop first.
 
 ### Inference (local)
 

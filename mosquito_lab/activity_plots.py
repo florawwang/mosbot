@@ -1055,13 +1055,19 @@ def fold_mean_bar(
     period: int,
     lo: int,
     hi: int | None,
+    death_bins: dict[int, int],
 ) -> np.ndarray:
     width = (len(counts[indices[0]]) if hi is None else hi) - lo
     width = max(width, 0)
     if width == 0:
         return np.zeros(period)
     traces = np.array(
-        [np.asarray(counts[i], dtype=float)[lo : lo + width] for i in indices]
+        [
+            apply_death_cut(
+                np.asarray(counts[i], dtype=float), i, death_bins, start_zt
+            )[lo : lo + width]
+            for i in indices
+        ]
     )
     t = np.arange(lo, lo + traces.shape[1])
     zt_hour = (t + start_zt) % period
@@ -1448,6 +1454,7 @@ def death_comparison(
 def full_period_bar(
     counts, groups, group_colors, start_zt, period, lo, hi, ld_end,
     title: str, xlabel: str, key: str, means_override=None,
+    death_bins: dict[int, int] | None = None,
     style: PlotStyle | None = None,
     show: bool = True,
 ):
@@ -1456,11 +1463,19 @@ def full_period_bar(
     ncol = min(2, len(order)) or 1
     nrow = math.ceil(len(order) / ncol)
     x_end = start_zt + max((len(c) for c in counts), default=0)
+    death_bins = death_bins or {}
 
     def mean_for(g):
         if means_override is not None:
             return means_override[g]
-        traces = np.array([np.asarray(counts[i], dtype=float) for i in groups[g]])
+        traces = np.array(
+            [
+                apply_death_cut(
+                    np.asarray(counts[i], dtype=float), i, death_bins, start_zt
+                )
+                for i in groups[g]
+            ]
+        )
         return np.nanmean(traces, axis=0)
 
     means = {g: mean_for(g) for g in order}
@@ -1495,7 +1510,8 @@ def full_period_bar(
 
 
 def folded_bar(
-    counts, groups, group_colors, start_zt, period, lo, hi, title: str, key: str,
+    counts, groups, group_colors, start_zt, period, lo, hi, death_bins, title: str,
+    key: str,
     style: PlotStyle | None = None,
     show: bool = True,
 ):
@@ -1503,7 +1519,12 @@ def folded_bar(
     order = list(groups.keys())
     ncol = min(2, len(order)) or 1
     nrow = math.ceil(len(order) / ncol)
-    folded = {g: fold_mean_bar(counts, groups[g], start_zt, period, lo, hi) for g in order}
+    folded = {
+        g: fold_mean_bar(
+            counts, groups[g], start_zt, period, lo, hi, death_bins
+        )
+        for g in order
+    }
     gymax = max((f.max() for f in folded.values() if f.size), default=1.0)
 
     with plt.rc_context(style.rc()):
@@ -1528,14 +1549,16 @@ def folded_bar(
 
 
 def folded_line(
-    counts, groups, group_colors, start_zt, period, lo, hi, title: str, key: str,
+    counts, groups, group_colors, start_zt, period, lo, hi, death_bins, title: str,
+    key: str,
     style: PlotStyle | None = None,
     show: bool = True,
 ):
     style = style or default_plot_style()
     order = list(groups.keys())
     folded = {
-        g: fold_24h(counts, groups[g], start_zt, period, lo, hi, {}) for g in order
+        g: fold_24h(counts, groups[g], start_zt, period, lo, hi, death_bins)
+        for g in order
     }
     gymax = 1.0
     for arr in folded.values():
@@ -1989,16 +2012,19 @@ def build_selected_figure(
             lo=0, hi=ld_end_i, ld_end=ld_end_i,
             title="Full LD period, averaged across mosquitoes",
             xlabel="ZT / experimental hour", key=key, style=style, show=False,
+            death_bins=death_bins,
         )
     if choice == "fig5":
         return folded_bar(
             counts, groups, group_colors, start_zt, period_i,
-            lo=0, hi=ld_end_i, title="LD, 24 h-folded", key=key, style=style, show=False,
+            lo=0, hi=ld_end_i, death_bins=death_bins,
+            title="LD, 24 h-folded", key=key, style=style, show=False,
         )
     if choice == "fig6":
         return folded_line(
             counts, groups, group_colors, start_zt, period_i,
-            lo=0, hi=ld_end_i, title="LD (24 h-folded) mean ± 1 SD",
+            lo=0, hi=ld_end_i, death_bins=death_bins,
+            title="LD (24 h-folded) mean ± 1 SD",
             key=key, style=style, show=False,
         )
     if choice == "fig7":
@@ -2012,12 +2038,14 @@ def build_selected_figure(
     if choice == "fig8":
         return folded_bar(
             counts, groups, group_colors, start_zt, period_i,
-            lo=ld_end_i, hi=None, title="DD, 24 h-folded", key=key, style=style, show=False,
+            lo=ld_end_i, hi=None, death_bins=death_bins,
+            title="DD, 24 h-folded", key=key, style=style, show=False,
         )
     if choice == "fig9":
         return folded_line(
             counts, groups, group_colors, start_zt, period_i,
-            lo=ld_end_i, hi=None, title="DD (24 h-folded) mean ± 1 SD",
+            lo=ld_end_i, hi=None, death_bins=death_bins,
+            title="DD (24 h-folded) mean ± 1 SD",
             key=key, style=style, show=False,
         )
     if choice == "fig10_bars":
@@ -2177,6 +2205,7 @@ def render_activity_graphs_body(settings: dict) -> None:
             what="Group-mean activity across the LD portion of the experiment (timeline, not folded).",
             how="""
 - Each panel is one group’s average across mosquitoes.
+- Activity after each mosquito’s death call is excluded (same rule as Fig 7).
 - X-axis is experimental / ZT-aligned time within LD only.
 - Grey bands mark night halves of each day.
 """,
@@ -2187,6 +2216,7 @@ def render_activity_graphs_body(settings: dict) -> None:
             lo=0, hi=ld_end_i, ld_end=ld_end_i,
             title="Full LD period, averaged across mosquitoes",
             xlabel="ZT / experimental hour", key="fig4", style=s_fig4,
+            death_bins=death_bins,
         )
         st.divider()
         s_fig5 = fig_header(
@@ -2197,6 +2227,7 @@ def render_activity_graphs_body(settings: dict) -> None:
             what="All LD days stacked into one average 24 h (ZT 0–24) profile per group.",
             how="""
 - Collapses multi-day LD into a single circadian day.
+- Bins after each mosquito’s death call are excluded.
 - Grey = subjective / scheduled night (ZT period/2–period).
 - Good for comparing waveform shape across genotypes/sexes.
 """,
@@ -2204,7 +2235,8 @@ def render_activity_graphs_body(settings: dict) -> None:
         )
         folded_bar(
             counts, groups, group_colors, start_zt, period_i,
-            lo=0, hi=ld_end_i, title="LD, 24 h-folded", key="fig5", style=s_fig5,
+            lo=0, hi=ld_end_i, death_bins=death_bins,
+            title="LD, 24 h-folded", key="fig5", style=s_fig5,
         )
         st.divider()
         s_fig6 = fig_header(
@@ -2215,13 +2247,15 @@ def render_activity_graphs_body(settings: dict) -> None:
             what="Same 24 h-folded LD profile as Fig 5, shown as mean ± 1 SD across mosquitoes.",
             how="""
 - Line = group mean; ribbon = ± 1 SD between mosquitoes.
+- Only live (pre-death) bins contribute per mosquito.
 - Wide ribbons mean mosquitoes disagree; tight ribbons mean a consistent group pattern.
 """,
             ask="Is the LD rhythm consistent within each group, or very mosquito-to-mosquito?",
         )
         folded_line(
             counts, groups, group_colors, start_zt, period_i,
-            lo=0, hi=ld_end_i, title="LD (24 h-folded) mean ± 1 SD", key="fig6",
+            lo=0, hi=ld_end_i, death_bins=death_bins,
+            title="LD (24 h-folded) mean ± 1 SD", key="fig6",
             style=s_fig6,
         )
 
@@ -2266,13 +2300,15 @@ def render_activity_graphs_body(settings: dict) -> None:
             what="DD days folded into one average 24 h ZT profile per group.",
             how="""
 - Same folding idea as Fig 5, but only using post-switch bins.
+- Bins after each mosquito’s death call are excluded.
 - Grey = ZT night half (even though lights are off in DD).
 """,
             ask="Is the DD peak still aligned with the LD night, or did it drift?",
         )
         folded_bar(
             counts, groups, group_colors, start_zt, period_i,
-            lo=ld_end_i, hi=None, title="DD, 24 h-folded", key="fig8", style=s_fig8,
+            lo=ld_end_i, hi=None, death_bins=death_bins,
+            title="DD, 24 h-folded", key="fig8", style=s_fig8,
         )
         st.divider()
         s_fig9 = fig_header(
@@ -2283,13 +2319,15 @@ def render_activity_graphs_body(settings: dict) -> None:
             what="DD 24 h-folded mean ± 1 SD across mosquitoes.",
             how="""
 - Compare ribbon width to Fig 6: DD is often noisier.
+- Only live (pre-death) bins contribute per mosquito.
 - Useful for seeing whether a genotype keeps a coherent free-running rhythm.
 """,
             ask="Which groups still look rhythmic in DD?",
         )
         folded_line(
             counts, groups, group_colors, start_zt, period_i,
-            lo=ld_end_i, hi=None, title="DD (24 h-folded) mean ± 1 SD", key="fig9",
+            lo=ld_end_i, hi=None, death_bins=death_bins,
+            title="DD (24 h-folded) mean ± 1 SD", key="fig9",
             style=s_fig9,
         )
 

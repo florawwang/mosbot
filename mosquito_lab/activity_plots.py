@@ -195,13 +195,12 @@ def _md_inline_to_html(text: str) -> str:
 
 
 def _help_bubble_body(what: str = "", how: str = "", ask: str | None = None) -> str:
+    del ask  # "Ask yourself" prompts removed per request
     parts: list[str] = []
     if what:
         parts.append(_md_inline_to_html(what))
     if how:
         parts.append(_md_inline_to_html(how))
-    if ask:
-        parts.append(_md_inline_to_html(f"**Ask yourself:** {ask}"))
     return "".join(parts)
 
 
@@ -331,6 +330,102 @@ def _title_with_help(
     )
 
 
+_FIG_CUSTOM_PREFIX = "figfmt::"
+
+
+def _fig_key(fig_id: str, name: str) -> str:
+    return f"{_FIG_CUSTOM_PREFIX}{fig_id}::{name}"
+
+
+def read_fig_style(fig_id: str, base: PlotStyle) -> PlotStyle:
+    """Effective style for one figure: sidebar ``base`` + per-figure overrides.
+
+    Pure read from ``st.session_state`` (renders nothing), so both ``fig_header``
+    and the Section E compare view resolve the same per-figure customization.
+    """
+    if not fig_id:
+        return base
+    ss = st.session_state
+    if not ss.get(_fig_key(fig_id, "override"), False):
+        return base
+    return base.overridden(
+        graph_title=ss.get(_fig_key(fig_id, "title"), ""),
+        xlabel=ss.get(_fig_key(fig_id, "xlabel"), ""),
+        ylabel=ss.get(_fig_key(fig_id, "ylabel"), ""),
+        width_scale=ss.get(_fig_key(fig_id, "width"), base.width_scale),
+        height_scale=ss.get(_fig_key(fig_id, "height"), base.height_scale),
+        font_size=ss.get(_fig_key(fig_id, "font"), base.font_size),
+        title_size=ss.get(_fig_key(fig_id, "title_size"), base.title_size),
+        label_size=ss.get(_fig_key(fig_id, "label_size"), base.label_size),
+        tick_size=ss.get(_fig_key(fig_id, "tick_size"), base.tick_size),
+    )
+
+
+def _render_fig_customizer(fig_id: str, base: PlotStyle) -> PlotStyle:
+    """Per-figure 'Customize' popover. Returns the effective style for this figure."""
+    with st.popover("Customize", use_container_width=True):
+        st.caption(
+            "Overrides the sidebar **Plot style** for *this figure only*. "
+            "Leave off to follow the sidebar."
+        )
+        on = st.checkbox("Customize this figure", key=_fig_key(fig_id, "override"))
+        if on:
+            st.text_input(
+                "Title (prefix)",
+                key=_fig_key(fig_id, "title"),
+                placeholder="blank = inherit sidebar title",
+            )
+            lc, rc = st.columns(2)
+            with lc:
+                st.text_input(
+                    "Rename X-axis",
+                    key=_fig_key(fig_id, "xlabel"),
+                    placeholder="blank = default",
+                )
+            with rc:
+                st.text_input(
+                    "Rename Y-axis",
+                    key=_fig_key(fig_id, "ylabel"),
+                    placeholder="blank = default",
+                )
+            wc, hc = st.columns(2)
+            with wc:
+                st.slider(
+                    "Width", 0.5, 2.5, float(base.width_scale), 0.05,
+                    key=_fig_key(fig_id, "width"),
+                )
+            with hc:
+                st.slider(
+                    "Height", 0.5, 2.5, float(base.height_scale), 0.05,
+                    key=_fig_key(fig_id, "height"),
+                )
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                st.slider(
+                    "Body text", 6, 20, int(base.font_size),
+                    key=_fig_key(fig_id, "font"),
+                )
+                st.slider(
+                    "Axis label size", 6, 22, int(base.label_size),
+                    key=_fig_key(fig_id, "label_size"),
+                )
+            with sc2:
+                st.slider(
+                    "Title size", 8, 28, int(base.title_size),
+                    key=_fig_key(fig_id, "title_size"),
+                )
+                st.slider(
+                    "Tick size", 5, 18, int(base.tick_size),
+                    key=_fig_key(fig_id, "tick_size"),
+                )
+            if st.button("Reset to sidebar", key=_fig_key(fig_id, "reset")):
+                prefix = f"{_FIG_CUSTOM_PREFIX}{fig_id}::"
+                for k in [k for k in st.session_state if k.startswith(prefix)]:
+                    del st.session_state[k]
+                st.rerun()
+    return read_fig_style(fig_id, base)
+
+
 def fig_header(
     title: str,
     *,
@@ -341,10 +436,22 @@ def fig_header(
     ask: str | None = None,
     level: str = "###",
     customize: bool = False,
-) -> None:
-    """Figure title with hover '?' help. Style comes from the sidebar only."""
-    _ = (fig_id, base_style, customize)  # kept for call-site compatibility
+) -> PlotStyle:
+    """Figure title with hover '?' help and (optional) per-figure Customize popover.
+
+    Returns the effective :class:`PlotStyle` for this figure — the sidebar style,
+    plus any per-figure overrides when ``customize=True``. Pass the returned style
+    to the plotting function so overrides actually take effect.
+    """
+    base = base_style or default_plot_style()
+    if customize and fig_id:
+        head_col, ctrl_col = st.columns([0.82, 0.18])
+        with head_col:
+            _title_with_help(title, what=what, how=how, ask=ask, level=level)
+        with ctrl_col:
+            return _render_fig_customizer(fig_id, base)
     _title_with_help(title, what=what, how=how, ask=ask, level=level)
+    return base
 
 
 def fig_guide(what: str, how: str, ask: str | None = None) -> None:
@@ -876,10 +983,16 @@ def apply_death_cut(
     start_zt: float,
     exclude_hours: float = 0.0,
 ) -> np.ndarray:
+    # ``death_bins[idx]`` is already a bin index (death_frame // bin_size) on the
+    # same axis as ``trace``/``counts`` (measured from frame 0). ``start_zt`` only
+    # shifts the x-axis *labels*, not the data, so it must NOT be subtracted here —
+    # doing so cut every trace ~start_zt bins too early and made these figures
+    # disagree with the Section D phase totals (which cut at ``i >= death_bin``).
+    del start_zt  # kept for call-site compatibility; intentionally unused
     trace = np.asarray(trace, dtype=float).copy()
     if idx not in death_bins:
         return trace
-    cut = int(np.floor(death_bins[idx] - start_zt - exclude_hours))
+    cut = int(np.floor(death_bins[idx] - exclude_hours))
     cut = int(np.clip(cut, 0, len(trace)))
     trace[cut:] = np.nan
     return trace
@@ -1832,6 +1945,20 @@ def render_plot_style_controls() -> PlotStyle:
     )
 
 
+# Compare-view figure id -> the fig_header fig_id whose per-figure overrides apply.
+_COMPARE_TO_FIGID = {
+    "fig3": "fig3",
+    "fig4": "fig4",
+    "fig5": "fig5",
+    "fig6": "fig6",
+    "fig7": "fig7",
+    "fig8": "fig8",
+    "fig9": "fig9",
+    "fig10_bars": "fig10_phase",
+    "fig10_box": "fig10_box",
+}
+
+
 def build_selected_figure(
     choice: str,
     *,
@@ -1848,6 +1975,8 @@ def build_selected_figure(
 ):
     """Build one comparable figure (no Streamlit display). Returns matplotlib Figure."""
     key = f"compare_build_{choice}"
+    # Honour each figure's own per-graph customization in the compare/mix view.
+    style = read_fig_style(_COMPARE_TO_FIGID.get(choice, ""), style)
     if choice == "fig3":
         _means, fig = death_comparison(
             counts, groups, group_colors, start_zt, period_i, ld_end_i,
@@ -1974,10 +2103,11 @@ def render_activity_graphs_body(settings: dict) -> None:
     )
 
     with sec_a:
-        fig_header(
+        s_fig1 = fig_header(
             "Fig 1 — Individual actograms (pre-death-cut)",
             fig_id="fig1",
             base_style=style,
+            customize=True,
             what="One subplot per mosquito: hourly distance over the full experiment (no death trimming).",
             how="""
 - **Bars** = distance moved in each time bin (default ~1 hour).
@@ -1991,13 +2121,14 @@ def render_activity_graphs_body(settings: dict) -> None:
             counts, groups, group_colors, idx_to_label, start_zt, period_i, ld_end_i,
             death_bins, apply_deaths=False,
             title="Individual actograms (pre-death-cut)", key="fig1",
-            style=style,
+            style=s_fig1,
         )
         st.divider()
-        fig_header(
+        s_fig2 = fig_header(
             "Fig 2 — Individual actograms (death-cut)",
             fig_id="fig2",
             base_style=style,
+            customize=True,
             what="Same as Fig 1, but activity after each mosquito’s death frame is removed (set to missing).",
             how="""
 - Requires death calls in section 4 above.
@@ -2010,13 +2141,14 @@ def render_activity_graphs_body(settings: dict) -> None:
             counts, groups, group_colors, idx_to_label, start_zt, period_i, ld_end_i,
             death_bins, apply_deaths=True,
             title="Individual actograms (death-cut)", key="fig2",
-            style=style,
+            style=s_fig2,
         )
         st.divider()
-        fig_header(
+        s_fig3 = fig_header(
             "Fig 3 — Death comparison",
             fig_id="fig3",
             base_style=style,
+            customize=True,
             what="Group-average traces with two cut rules: at death vs 24 h before death.",
             how="""
 - **Left column:** cut exactly at the recorded death time.
@@ -2027,18 +2159,21 @@ def render_activity_graphs_body(settings: dict) -> None:
         )
         means_death = death_comparison(
             counts, groups, group_colors, start_zt, period_i, ld_end_i,
-            death_bins, key="fig3", style=style,
+            death_bins, key="fig3", style=s_fig3,
         )
 
     with sec_b:
-        st.info(
-            "**LD (light–dark)** = bins before the LD→DD switch. "
-            "Day = unshaded ZT half (ZT 0–period/2); night = grey band (ZT period/2–period)."
-        )
-        fig_header(
+        with st.expander("About LD (light–dark)", expanded=False):
+            st.markdown(
+                "**LD** = bins before the LD→DD switch.\n\n"
+                "- **Day** = unshaded ZT half (ZT 0 – period/2)\n"
+                "- **Night** = grey band (ZT period/2 – period)"
+            )
+        s_fig4 = fig_header(
             "Fig 4 — Full LD period",
             fig_id="fig4",
             base_style=style,
+            customize=True,
             what="Group-mean activity across the LD portion of the experiment (timeline, not folded).",
             how="""
 - Each panel is one group’s average across mosquitoes.
@@ -2051,13 +2186,14 @@ def render_activity_graphs_body(settings: dict) -> None:
             counts, groups, group_colors, start_zt, period_i,
             lo=0, hi=ld_end_i, ld_end=ld_end_i,
             title="Full LD period, averaged across mosquitoes",
-            xlabel="ZT / experimental hour", key="fig4", style=style,
+            xlabel="ZT / experimental hour", key="fig4", style=s_fig4,
         )
         st.divider()
-        fig_header(
+        s_fig5 = fig_header(
             "Fig 5 — LD, 24 h-folded",
             fig_id="fig5",
             base_style=style,
+            customize=True,
             what="All LD days stacked into one average 24 h (ZT 0–24) profile per group.",
             how="""
 - Collapses multi-day LD into a single circadian day.
@@ -2068,13 +2204,14 @@ def render_activity_graphs_body(settings: dict) -> None:
         )
         folded_bar(
             counts, groups, group_colors, start_zt, period_i,
-            lo=0, hi=ld_end_i, title="LD, 24 h-folded", key="fig5", style=style,
+            lo=0, hi=ld_end_i, title="LD, 24 h-folded", key="fig5", style=s_fig5,
         )
         st.divider()
-        fig_header(
+        s_fig6 = fig_header(
             "Fig 6 — LD mean ± 1 SD",
             fig_id="fig6",
             base_style=style,
+            customize=True,
             what="Same 24 h-folded LD profile as Fig 5, shown as mean ± 1 SD across mosquitoes.",
             how="""
 - Line = group mean; ribbon = ± 1 SD between mosquitoes.
@@ -2085,7 +2222,7 @@ def render_activity_graphs_body(settings: dict) -> None:
         folded_line(
             counts, groups, group_colors, start_zt, period_i,
             lo=0, hi=ld_end_i, title="LD (24 h-folded) mean ± 1 SD", key="fig6",
-            style=style,
+            style=s_fig6,
         )
 
     with sec_c:
@@ -2094,15 +2231,17 @@ def render_activity_graphs_body(settings: dict) -> None:
                 g: group_mean_trace(counts, groups[g], death_bins, start_zt, 0.0)
                 for g in groups
             }
-        st.info(
-            "**DD (dark–dark)** = bins after the LD→DD switch. "
-            "Incubator stays dark; **DD day / DD night** still follow the same ZT bands as the grey shading "
-            "(subjective day = unshaded, subjective night = grey)."
-        )
-        fig_header(
+        with st.expander("About DD (dark–dark)", expanded=False):
+            st.markdown(
+                "**DD** = bins after the LD→DD switch (incubator stays dark).\n\n"
+                "- **DD day / DD night** still follow the same ZT bands as the grey shading\n"
+                "- Subjective day = unshaded, subjective night = grey"
+            )
+        s_fig7 = fig_header(
             "Fig 7 — Full DD period",
             fig_id="fig7",
             base_style=style,
+            customize=True,
             what="Group-mean activity after the LD→DD switch (death-cut means).",
             how="""
 - Timeline of free-running / constant-dark portion only.
@@ -2116,13 +2255,14 @@ def render_activity_graphs_body(settings: dict) -> None:
             lo=ld_end_i, hi=None, ld_end=ld_end_i,
             title="Full DD period, averaged across mosquitoes",
             xlabel="Experimental hour", key="fig7", means_override=means_death,
-            style=style,
+            style=s_fig7,
         )
         st.divider()
-        fig_header(
+        s_fig8 = fig_header(
             "Fig 8 — DD, 24 h-folded",
             fig_id="fig8",
             base_style=style,
+            customize=True,
             what="DD days folded into one average 24 h ZT profile per group.",
             how="""
 - Same folding idea as Fig 5, but only using post-switch bins.
@@ -2132,13 +2272,14 @@ def render_activity_graphs_body(settings: dict) -> None:
         )
         folded_bar(
             counts, groups, group_colors, start_zt, period_i,
-            lo=ld_end_i, hi=None, title="DD, 24 h-folded", key="fig8", style=style,
+            lo=ld_end_i, hi=None, title="DD, 24 h-folded", key="fig8", style=s_fig8,
         )
         st.divider()
-        fig_header(
+        s_fig9 = fig_header(
             "Fig 9 — DD mean ± 1 SD",
             fig_id="fig9",
             base_style=style,
+            customize=True,
             what="DD 24 h-folded mean ± 1 SD across mosquitoes.",
             how="""
 - Compare ribbon width to Fig 6: DD is often noisier.
@@ -2149,14 +2290,23 @@ def render_activity_graphs_body(settings: dict) -> None:
         folded_line(
             counts, groups, group_colors, start_zt, period_i,
             lo=ld_end_i, hi=None, title="DD (24 h-folded) mean ± 1 SD", key="fig9",
-            style=style,
+            style=s_fig9,
         )
 
     with sec_d:
-        _title_with_help(
-            "Total pixel distance — day vs night × LD / DD",
-            what="Sums each mosquito’s total movement in four phases, then compares groups.",
-            how="""
+        st.markdown("### Total pixel distance — day vs night × LD / DD")
+        ld_bins = max(0, min(ld_end_i, trace_len))
+        dd_bins = max(0, trace_len - ld_end_i)
+        if dd_bins and ld_bins:
+            st.caption(
+                f"These are **summed** totals. This experiment has ~**{ld_bins} h of LD** "
+                f"vs ~**{dd_bins} h of DD**, so LD totals are larger mostly because the LD "
+                "window is longer (and death cuts trim late DD). Compare shapes/ratios, not "
+                "raw LD-vs-DD heights."
+            )
+        with st.expander("How phases & stats are computed", expanded=False):
+            st.markdown(
+                """
 **How phases are defined** (same rule as the grey bands on the graphs)
 - **LD vs DD:** bin index vs the LD→DD switch.
 - **Day** = unshaded ZT half (`ZT < period/2`).
@@ -2169,19 +2319,19 @@ def render_activity_graphs_body(settings: dict) -> None:
 - **Box + points:** every mosquito’s total (spread / outliers).
 - **Stats heatmap:** pairwise group differences (Mann–Whitney p-values).
 """
-            + "\n\n---\n\n"
-            + stats_glossary_help(),
-            ask="Do groups differ more in night totals, day totals, or both?",
-        )
+                + "\n\n---\n\n"
+                + stats_glossary_help()
+            )
 
         totals_display = totals.copy()
         totals_display["group"] = totals_display["group"].map(style.display_group)
 
-        fig_header(
+        s_fig10_phase = fig_header(
             "Mean ± 1 SD by phase",
             fig_id="fig10_phase",
             base_style=style,
             level="####",
+            customize=True,
             what="Grouped bars: average total distance (± 1 SD) per group for LD day, LD night, DD day, DD night.",
             how="""
 - Tall bar = more cumulative movement in that phase.
@@ -2190,13 +2340,14 @@ def render_activity_graphs_body(settings: dict) -> None:
 """,
             ask="Is night activity higher than day activity in every genotype?",
         )
-        phase_totals_figure(totals, groups, group_colors, style, key="fig10_phase")
+        phase_totals_figure(totals, groups, group_colors, s_fig10_phase, key="fig10_phase")
 
-        fig_header(
+        s_fig10_box = fig_header(
             "Per-mosquito distribution (box + points)",
             fig_id="fig10_box",
             base_style=style,
             level="####",
+            customize=True,
             what="Boxplots with individual mosquito points for each phase.",
             how="""
 - Box = middle 50% of mosquitoes; line inside ≈ median.
@@ -2205,7 +2356,7 @@ def render_activity_graphs_body(settings: dict) -> None:
 """,
             ask="Are group differences driven by most mosquitoes, or one outlier?",
         )
-        phase_totals_box_figure(totals, groups, style, key="fig10_box")
+        phase_totals_box_figure(totals, groups, s_fig10_box, key="fig10_box")
 
         with st.expander("Per-mosquito totals table", expanded=False):
             show_cols = [c for c in totals_display.columns if c != "mosquito_idx"]
@@ -2249,11 +2400,12 @@ def render_activity_graphs_body(settings: dict) -> None:
         )
         st.dataframe(within_display, use_container_width=True)
 
-        fig_header(
+        s_fig10_heat = fig_header(
             "Between-group comparisons",
             fig_id="fig10_heat",
             base_style=style,
             level="####",
+            customize=True,
             what="First Kruskal–Wallis across all groups, then pairwise Mann–Whitney U (heatmap).",
             how="""
 - **Kruskal–Wallis** (in the table): any overall group difference for that phase?
@@ -2264,7 +2416,7 @@ def render_activity_graphs_body(settings: dict) -> None:
             ask="Which pairwise genotype/sex contrasts are significant in LD night vs DD night?",
         )
         between = between_group_phase_tests(totals)
-        stats_heatmap_figure(between, style, key="fig10_heat")
+        stats_heatmap_figure(between, s_fig10_heat, key="fig10_heat")
         with st.expander("Full between-group stats table", expanded=False):
             between_display = between.copy()
             between_display["p"] = between_display["p"].map(

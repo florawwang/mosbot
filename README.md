@@ -15,6 +15,7 @@ Built for circadian pipeline.
 | **Frame images** | Scrub through timelapse frames with well crops and detection overlays |
 | **Detection inspector** | Check where YOLO misses mosquitoes (threshold slider, jump to misses, flag frames) |
 | **Activity graphs** | Actograms, LD/DD profiles, day/night totals, and stats from an activity CSV |
+| **Combine experiments** | Merge several experiments onto one ZT timeline — kinds line up, each keeps its true ZT start + LD/DD schedule, gaps become NaN — then plot combined Figs 3–9 + stats |
 
 ---
 

@@ -22,6 +22,7 @@ if str(_ROOT) not in sys.path:
 import streamlit as st
 
 from mosquito_lab.activity_plots import render_activity_graphs_body, render_graphs_sidebar
+from mosquito_lab.combine_ui import render_combine_body, render_combine_sidebar
 from mosquito_lab.frame_viewer import (
     render_frame_sidebar,
     render_frame_viewer_body,
@@ -88,23 +89,23 @@ def main() -> None:
     st.sidebar.title("mosbot")
     page = st.sidebar.radio(
         "Section",
-        ["Frame images", "Detection inspector", "Activity graphs"],
+        ["Frame images", "Detection inspector", "Activity graphs", "Combine experiments"],
         key="lab_page",
-        help="Browse frames, audit YOLO detections, or plot activity.",
+        help="Browse frames, audit YOLO detections, plot activity, or combine experiments.",
     )
 
+    cfg = None
+    settings = None
+    insp_cfg = None
+    combine_settings = None
     if page == "Frame images":
         cfg = render_frame_sidebar(paths)
-        settings = None
-        insp_cfg = None
     elif page == "Detection inspector":
-        cfg = None
-        settings = None
         insp_cfg = render_inspector_sidebar()
-    else:
-        cfg = None
+    elif page == "Activity graphs":
         settings = render_graphs_sidebar()
-        insp_cfg = None
+    else:
+        combine_settings = render_combine_sidebar()
 
     st.title("mosbot")
     if page == "Frame images":
@@ -117,12 +118,18 @@ def main() -> None:
             "Audit YOLO detections: overlay wells, slide confidence, jump to misses, flag frames."
         )
         render_inspector_body(insp_cfg)
-    else:
+    elif page == "Activity graphs":
         st.caption(
             "Activity analysis graphs. Hover the **?** next to a figure title for help; "
             "use the **Plot style** sidebar to change labels, size, or fonts."
         )
         render_activity_graphs_body(settings)
+    else:
+        st.caption(
+            "Combine several experiments onto one ZT timeline: kinds line up, each "
+            "experiment keeps its true ZT start and LD/DD schedule, and gaps become NaN."
+        )
+        render_combine_body(combine_settings)
 
 
 if __name__ == "__main__":

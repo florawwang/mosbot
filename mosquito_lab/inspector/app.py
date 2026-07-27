@@ -17,8 +17,14 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import streamlit as st
+from matplotlib.colors import ListedColormap
 from PIL import Image, ImageDraw, ImageFont
 
 from mosquito_lab.data_sources import resolve_local_or_drive
@@ -116,6 +122,116 @@ def load_experiment_data(exp: core.Experiment):
 @st.cache_data(show_spinner=False)
 def _load_frame_image(image_folder: str, name: str) -> Image.Image:
     return Image.open(os.path.join(image_folder, name)).convert("RGB")
+
+
+@st.cache_data(show_spinner=False)
+def _detection_matrix(
+    cache_file: str,
+    mtime: float,
+    real_wells: tuple[int, ...],
+    processed: tuple[int, ...],
+):
+    """Cached (wells x frames) best-confidence matrix for experiment-wide views."""
+    df = _cached_load(cache_file, mtime)
+    return core.best_conf_matrix(df, list(processed), list(real_wells))
+
+
+# Matplotlib RGB (0-1) versions of the overlay colors, for the analytics charts.
+_MPL_DETECTED = tuple(c / 255 for c in C_DETECTED)
+_MPL_MISSED = tuple(c / 255 for c in C_MISSED)
+_MPL_CANDIDATE = tuple(c / 255 for c in C_CANDIDATE)
+_MPL_FOCUS = tuple(c / 255 for c in C_FOCUS)
+
+
+def _threshold_curve_fig(matrix: np.ndarray, threshold: float, suggested: float):
+    curve = core.detection_rate_curve(matrix)
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.plot(curve["threshold"], curve["detection_rate"] * 100, color="#2c3e50", lw=2)
+    ax.axvline(threshold, color=_MPL_FOCUS, ls="-", lw=2, label=f"current {threshold:.2f}")
+    ax.axvline(suggested, color=_MPL_DETECTED, ls="--", lw=2, label=f"suggested {suggested:.2f}")
+    cur_rate = core.detected_fraction(matrix, threshold) * 100
+    ax.scatter([threshold], [cur_rate], color=_MPL_FOCUS, zorder=5)
+    ax.set_xlabel("Confidence threshold")
+    ax.set_ylabel("Wells detected (%)")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 100)
+    ax.grid(alpha=0.25)
+    ax.legend(loc="lower left", fontsize=8, framealpha=0.9)
+    fig.tight_layout()
+    return fig
+
+
+def _confidence_hist_fig(confidences: np.ndarray, threshold: float):
+    fig, ax = plt.subplots(figsize=(6, 3))
+    if confidences.size:
+        below = confidences[confidences < threshold]
+        above = confidences[confidences >= threshold]
+        bins = np.linspace(0, 1, 41)
+        ax.hist(below, bins=bins, color=_MPL_CANDIDATE, label="below threshold")
+        ax.hist(above, bins=bins, color=_MPL_DETECTED, label="above threshold")
+    ax.axvline(threshold, color=_MPL_FOCUS, lw=2)
+    ax.set_xlabel("Candidate box confidence")
+    ax.set_ylabel("# boxes")
+    ax.set_xlim(0, 1)
+    ax.grid(alpha=0.25)
+    ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
+    fig.tight_layout()
+    return fig
+
+
+def _miss_heatmap_fig(
+    matrix: np.ndarray,
+    wells: list[int],
+    frames: list[int],
+    threshold: float,
+    current_pos: int | None,
+):
+    detected = core._detected_mask(matrix, threshold).astype(int)  # 0 missed, 1 detected
+    fig_h = max(2.5, 0.22 * len(wells) + 1)
+    fig, ax = plt.subplots(figsize=(9, fig_h))
+    cmap = ListedColormap([_MPL_MISSED, _MPL_DETECTED])
+    ax.imshow(detected, aspect="auto", cmap=cmap, vmin=0, vmax=1, interpolation="nearest")
+    ax.set_yticks(range(len(wells)))
+    ax.set_yticklabels(wells, fontsize=7)
+    ax.set_ylabel("Well")
+    n = len(frames)
+    step = max(1, n // 12)
+    xt = list(range(0, n, step))
+    ax.set_xticks(xt)
+    ax.set_xticklabels([str(frames[i]) for i in xt], rotation=45, ha="right", fontsize=7)
+    ax.set_xlabel("Frame index")
+    if current_pos is not None and 0 <= current_pos < n:
+        ax.axvline(current_pos, color=_MPL_FOCUS, lw=2)
+    fig.tight_layout()
+    return fig
+
+
+def _timeline_fig(
+    fsum: pd.DataFrame,
+    current_frame: int,
+    flagged_idx: list[int],
+    n_wells: int,
+):
+    fig, ax = plt.subplots(figsize=(9, 3))
+    ax.plot(fsum["frame_idx"], fsum["detected"], color="#2c3e50", lw=1.5)
+    ax.fill_between(fsum["frame_idx"], fsum["detected"], color="#2c3e50", alpha=0.1)
+    ax.axhline(n_wells, color="grey", ls=":", lw=1, label=f"all {n_wells} wells")
+    ax.axvline(current_frame, color=_MPL_FOCUS, lw=2, label="current frame")
+    lo, hi = fsum["frame_idx"].min(), fsum["frame_idx"].max()
+    ymap = dict(zip(fsum["frame_idx"], fsum["detected"]))
+    fl = [f for f in flagged_idx if lo <= f <= hi]
+    if fl:
+        ax.scatter(
+            fl, [ymap.get(f, 0) for f in fl],
+            color=_MPL_MISSED, marker="v", zorder=5, label="flagged",
+        )
+    ax.set_xlabel("Frame index")
+    ax.set_ylabel("Wells detected")
+    ax.set_ylim(0, n_wells + 1)
+    ax.grid(alpha=0.25)
+    ax.legend(loc="lower left", fontsize=8, framealpha=0.9)
+    fig.tight_layout()
+    return fig
 
 
 def _font(size: int = 13):
@@ -410,6 +526,15 @@ def render_inspector_body(cfg: dict | None) -> None:
         st.error("Cache is empty. Rebuild it with precompute.py.")
         return
 
+    real_well_ids = [w.idx for w in wells if not w.degenerate]
+    matrix, mat_wells, mat_frames = _detection_matrix(
+        exp.cache_file,
+        os.path.getmtime(exp.cache_file),
+        tuple(real_well_ids),
+        tuple(processed),
+    )
+    suggested_threshold = core.suggest_threshold(matrix)
+
     focus_enabled = cfg["focus_enabled"]
     focus_well = cfg.get("focus_well")
     threshold = cfg["threshold"]
@@ -422,6 +547,11 @@ def render_inspector_body(cfg: dict | None) -> None:
         f"floor {meta.get('conf_floor', '?')} · stride {meta.get('stride', '?')} · "
         f"{len(processed)}/{meta.get('n_frames_total', len(frames))} frames · "
         f"{len(df)} boxes"
+    )
+    overall_rate = core.detected_fraction(matrix, threshold) * 100
+    st.sidebar.caption(
+        f"At threshold **{threshold:.2f}**: **{overall_rate:.1f}%** of wells detected · "
+        f"suggested **{suggested_threshold:.2f}** (see Overview tab)."
     )
 
     key = f"insp_pos::{exp.cache_file}"
@@ -483,6 +613,13 @@ def render_inspector_body(cfg: dict | None) -> None:
             st.rerun()
         else:
             st.toast("No later missed frame.")
+    if jump[3].button("Worst frame (most misses)", key="insp_jump_worst"):
+        wp = core.worst_frame_position(matrix, threshold, exclude_pos=pos)
+        if wp is not None:
+            st.session_state[key] = wp
+            st.rerun()
+        else:
+            st.toast("No frames with missed wells at this threshold.")
 
     frame_name = frames[current_frame]
     frame_df = df[df["frame_idx"] == current_frame]
@@ -566,9 +703,86 @@ def render_inspector_body(cfg: dict | None) -> None:
         core.set_flag(exp, current_frame, False)
         st.rerun()
 
-    tab_boxes, tab_wells, tab_frames, tab_flags = st.tabs(
-        ["Boxes (this frame)", "Per-well miss rate", "Detections over time", "Flagged frames"]
+    tab_overview, tab_boxes, tab_wells, tab_frames, tab_flags = st.tabs(
+        [
+            "Overview (experiment)",
+            "Boxes (this frame)",
+            "Per-well miss rate",
+            "Detections over time",
+            "Flagged frames",
+        ]
     )
+
+    with tab_overview:
+        fsum = core.frame_detection_summary(matrix, mat_frames, threshold)
+        frames_with_miss = int((fsum["missed"] > 0).sum())
+        fully = len(fsum) - frames_with_miss
+        floor = meta.get("conf_floor", 0.01)
+        floor_rate = core.detected_fraction(matrix, floor) * 100
+
+        oc = st.columns(4)
+        oc[0].metric(
+            "Detection rate",
+            f"{overall_rate:.1f}%",
+            help="Share of well×frame cells detected at the current threshold.",
+        )
+        oc[1].metric("Frames all-detected", f"{fully}/{len(fsum)}")
+        oc[2].metric("Frames with a miss", frames_with_miss)
+        oc[3].metric(
+            "Suggested threshold",
+            f"{suggested_threshold:.2f}",
+            help=(
+                f"Raise the slider up to here and you still keep ~all boxes the model "
+                f"found (≤1% below the {floor} floor, which detects {floor_rate:.0f}%)."
+            ),
+        )
+
+        st.markdown("**Pick a threshold**")
+        st.caption(
+            "Left: how many wells stay detected as you raise the threshold — aim for the "
+            "flat part, above the low-confidence noise. Right: the confidence of every "
+            "candidate box (green already clears the current threshold)."
+        )
+        g1, g2 = st.columns(2)
+        with g1:
+            st.pyplot(_threshold_curve_fig(matrix, threshold, suggested_threshold))
+        with g2:
+            st.pyplot(_confidence_hist_fig(df["conf"].to_numpy(), threshold))
+
+        st.markdown("**Where are the misses?**")
+        st.caption(
+            f"Green = detected, red = missed at threshold {threshold:.2f}. "
+            "Blue line = current frame. Rows are wells, columns are frames."
+        )
+        st.pyplot(_miss_heatmap_fig(matrix, mat_wells, mat_frames, threshold, pos))
+
+        wc1, wc2 = st.columns(2)
+        with wc1:
+            st.caption("Worst wells (highest miss rate)")
+            wr = (
+                core.per_well_missed_rate(df, threshold, processed, real_well_ids)
+                .sort_values("missed_rate", ascending=False)
+                .head(5)
+            )
+            st.dataframe(wr, use_container_width=True, hide_index=True)
+        with wc2:
+            st.caption("Worst frames (most missed wells)")
+            worst = fsum.sort_values("missed", ascending=False).head(5).copy()
+            worst["image_name"] = worst["frame_idx"].map(
+                lambda i: frames[i] if 0 <= i < len(frames) else ""
+            )
+            st.dataframe(
+                worst[["frame_idx", "image_name", "detected", "missed"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        if st.button("Jump to worst frame", key="insp_jump_worst_overview"):
+            wp = core.worst_frame_position(matrix, threshold)
+            if wp is not None:
+                st.session_state[key] = wp
+                st.rerun()
+            else:
+                st.toast("No missed wells at this threshold.")
 
     with tab_boxes:
         if frame_df.empty:
@@ -589,9 +803,14 @@ def render_inspector_body(cfg: dict | None) -> None:
         st.bar_chart(wr.set_index("well")["missed_rate"])
 
     with tab_frames:
-        counts = core.per_frame_detection_counts(df, threshold, processed)
-        st.caption(f"Wells detected per frame at threshold {threshold:.2f} (of {n_real_wells}).")
-        st.line_chart(counts.set_index("frame_idx")["detected"])
+        st.caption(
+            f"Wells detected per frame at threshold {threshold:.2f} (of {n_real_wells}). "
+            "Blue line = current frame, red triangles = flagged frames. Dips reveal bad "
+            "stretches of video."
+        )
+        fsum_t = core.frame_detection_summary(matrix, mat_frames, threshold)
+        flagged_idx = [int(k) for k in flags]
+        st.pyplot(_timeline_fig(fsum_t, current_frame, flagged_idx, n_real_wells))
 
     with tab_flags:
         if not flags:

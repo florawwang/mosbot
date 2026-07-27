@@ -341,6 +341,103 @@ def per_well_missed_rate(
     return pd.DataFrame(rows)
 
 
+def best_conf_matrix(
+    df: pd.DataFrame, processed_frames: list[int], real_wells: list[int]
+) -> tuple[np.ndarray, list[int], list[int]]:
+    """Dense (wells x frames) matrix of the best candidate confidence per cell.
+
+    ``matrix[i, j]`` is the highest-confidence box for ``real_wells[i]`` on
+    ``processed_frames[j]``, or ``0.0`` when the model produced no box there.
+    This single structure powers the threshold curve, the miss heatmap, and the
+    per-frame/per-well summaries without repeatedly re-scanning the DataFrame.
+    """
+    wells = list(real_wells)
+    frames = list(processed_frames)
+    w_index = {w: i for i, w in enumerate(wells)}
+    f_index = {f: j for j, f in enumerate(frames)}
+    mat = np.zeros((len(wells), len(frames)), dtype=float)
+    if not df.empty and wells and frames:
+        sub = df[df["well"].isin(w_index) & df["frame_idx"].isin(f_index)]
+        if not sub.empty:
+            best = sub.groupby(["well", "frame_idx"])["conf"].max().reset_index()
+            wi = best["well"].map(w_index).to_numpy()
+            fj = best["frame_idx"].map(f_index).to_numpy()
+            mat[wi, fj] = best["conf"].to_numpy()
+    return mat, wells, frames
+
+
+def _detected_mask(matrix: np.ndarray, threshold: float) -> np.ndarray:
+    """Cells that count as a detection: a real box (>0) that clears threshold."""
+    return (matrix > 0.0) & (matrix >= threshold)
+
+
+def detected_fraction(matrix: np.ndarray, threshold: float) -> float:
+    """Fraction of all (well, frame) cells detected at ``threshold``."""
+    if matrix.size == 0:
+        return 0.0
+    return float(_detected_mask(matrix, threshold).sum()) / float(matrix.size)
+
+
+def detection_rate_curve(
+    matrix: np.ndarray, thresholds: np.ndarray | None = None
+) -> pd.DataFrame:
+    """Detection rate (fraction of cells detected) as a function of threshold."""
+    if thresholds is None:
+        thresholds = np.round(np.arange(0.0, 1.0001, 0.01), 2)
+    rates = [detected_fraction(matrix, float(t)) for t in thresholds]
+    return pd.DataFrame({"threshold": thresholds, "detection_rate": rates})
+
+
+def suggest_threshold(
+    matrix: np.ndarray, tol: float = 0.01, floor: float = DEFAULT_CONF_FLOOR
+) -> float:
+    """Highest threshold that loses <= ``tol`` detection rate vs the cache floor.
+
+    Answers "how high can I push the slider before I start dropping mosquitoes
+    the model actually found?" — a good default working threshold.
+    """
+    if matrix.size == 0:
+        return floor
+    base = detected_fraction(matrix, floor)
+    best = floor
+    for t in np.round(np.arange(floor, 1.0001, 0.01), 2):
+        if base - detected_fraction(matrix, float(t)) <= tol:
+            best = float(t)
+        else:
+            break
+    return round(best, 2)
+
+
+def frame_detection_summary(
+    matrix: np.ndarray, frames: list[int], threshold: float
+) -> pd.DataFrame:
+    """Per-frame detected/missed well counts at a threshold (from the matrix)."""
+    n_wells = matrix.shape[0]
+    if n_wells == 0:
+        return pd.DataFrame({"frame_idx": frames, "detected": 0, "missed": 0})
+    det = _detected_mask(matrix, threshold).sum(axis=0)
+    return pd.DataFrame(
+        {"frame_idx": frames, "detected": det, "missed": n_wells - det}
+    )
+
+
+def worst_frame_position(
+    matrix: np.ndarray, threshold: float, exclude_pos: int | None = None
+) -> int | None:
+    """Index (into the frames axis) of the frame with the most missed wells."""
+    if matrix.size == 0:
+        return None
+    missed = matrix.shape[0] - _detected_mask(matrix, threshold).sum(axis=0)
+    order = np.argsort(-missed, kind="stable")
+    for pos in order:
+        if int(missed[pos]) <= 0:
+            return None
+        if exclude_pos is not None and int(pos) == exclude_pos:
+            continue
+        return int(pos)
+    return None
+
+
 def next_missed_frame(
     df: pd.DataFrame,
     threshold: float,

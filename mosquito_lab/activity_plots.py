@@ -1036,6 +1036,8 @@ def fold_24h(
             if i >= death:
                 continue
             val = trace[i]
+            if not np.isfinite(val):  # skip pre-start / gap / post-death NaNs
+                continue
             zt = (start_zt + i) % period
             low = int(np.floor(zt)) % period
             high = (low + 1) % period

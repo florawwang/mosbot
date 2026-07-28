@@ -250,6 +250,7 @@ def draw_overlay(
     show_labels: bool,
     show_candidates: bool,
     focus_well: int | None,
+    collapse_boxes: bool = False,
 ) -> Image.Image:
     canvas = img.copy()
     draw = ImageDraw.Draw(canvas)
@@ -271,7 +272,12 @@ def draw_overlay(
             if show_labels:
                 draw.text((well.x + 2, well.y + 1), str(well.idx), fill=color, font=font)
 
-    for _, r in frame_df.iterrows():
+    boxes_df = frame_df
+    if collapse_boxes and not frame_df.empty:
+        # One box per well: the single highest-confidence candidate.
+        boxes_df = core.collapse_to_best_per_well(frame_df)
+
+    for _, r in boxes_df.iterrows():
         above = r["conf"] >= threshold
         if not above and not show_candidates:
             continue
@@ -470,6 +476,16 @@ def render_inspector_sidebar() -> dict | None:
         key="insp_show_candidates",
         help="Boxes YOLO found above the cache floor but below the current threshold.",
     )
+    collapse_boxes = st.sidebar.checkbox(
+        "Collapse to best box per well",
+        value=True,
+        key="insp_collapse_boxes",
+        help=(
+            "YOLO emits many overlapping low-confidence guesses per well. When on, "
+            "each well shows only its single highest-confidence box (green if it "
+            "clears the threshold, else yellow) instead of a cloud of boxes."
+        ),
+    )
 
     st.sidebar.markdown("#### Overlay")
     show_wells = st.sidebar.checkbox("Show well boxes", value=True, key="insp_show_wells")
@@ -498,6 +514,7 @@ def render_inspector_sidebar() -> dict | None:
         "exp": exp,
         "threshold": threshold,
         "show_candidates": show_candidates,
+        "collapse_boxes": collapse_boxes,
         "show_wells": show_wells,
         "show_labels": show_labels,
         "focus_enabled": focus_enabled,
@@ -539,6 +556,7 @@ def render_inspector_body(cfg: dict | None) -> None:
     focus_well = cfg.get("focus_well")
     threshold = cfg["threshold"]
     show_candidates = cfg["show_candidates"]
+    collapse_boxes = cfg.get("collapse_boxes", True)
     show_wells = cfg["show_wells"]
     show_labels = cfg["show_labels"]
 
@@ -648,6 +666,7 @@ def render_inspector_body(cfg: dict | None) -> None:
         show_labels,
         show_candidates,
         focus_well,
+        collapse_boxes=collapse_boxes,
     )
 
     left, right = (
@@ -656,14 +675,15 @@ def render_inspector_body(cfg: dict | None) -> None:
         else (st.container(), None)
     )
     with left:
-        st.image(
-            overlay,
-            use_container_width=True,
-            caption=(
-                f"{frame_name} — green=detected, red=missed well, "
-                "yellow=below-threshold candidate"
-            ),
+        caption = (
+            f"{frame_name} — green=detected, red=missed well, "
+            "yellow=below-threshold candidate"
         )
+        if collapse_boxes and not frame_df.empty:
+            n_all = len(frame_df)
+            n_shown = frame_df["well"].nunique()
+            caption += f" · collapsed {n_all} → {n_shown} box(es)"
+        st.image(overlay, use_container_width=True, caption=caption)
     if right is not None:
         fw = next(w for w in wells if w.idx == focus_well)
         with right:
@@ -788,10 +808,20 @@ def render_inspector_body(cfg: dict | None) -> None:
         if frame_df.empty:
             st.info("No candidate boxes on this frame.")
         else:
-            view = frame_df.copy()
+            view = (
+                core.collapse_to_best_per_well(frame_df)
+                if collapse_boxes
+                else frame_df
+            ).copy()
             view["above_threshold"] = view["conf"] >= threshold
             view = view[["well", "conf", "above_threshold", "x1", "y1", "x2", "y2"]]
             view = view.sort_values(["well", "conf"], ascending=[True, False])
+            if collapse_boxes:
+                st.caption(
+                    f"Showing best box per well ({len(view)} of {len(frame_df)} "
+                    "candidates). Turn off **Collapse to best box per well** in the "
+                    "sidebar to see every candidate."
+                )
             st.dataframe(view, use_container_width=True, hide_index=True)
 
     with tab_wells:

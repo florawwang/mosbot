@@ -287,6 +287,19 @@ def best_box_per_well(frame_df: pd.DataFrame, threshold: float) -> pd.DataFrame:
     return kept.loc[idx].sort_values("well")
 
 
+def collapse_to_best_per_well(frame_df: pd.DataFrame) -> pd.DataFrame:
+    """Keep only the single highest-confidence box per well (any confidence).
+
+    Used by the inspector overlay to turn a cloud of overlapping yellow
+    candidates into one box per well, without discarding below-threshold
+    evidence the way ``best_box_per_well`` does.
+    """
+    if frame_df.empty:
+        return frame_df
+    idx = frame_df.groupby("well")["conf"].idxmax()
+    return frame_df.loc[idx].sort_values("well")
+
+
 def detected_wells(frame_df: pd.DataFrame, threshold: float) -> set[int]:
     if frame_df.empty:
         return set()

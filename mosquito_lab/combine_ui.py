@@ -337,10 +337,12 @@ def _render_combined_figures(cd: cmb.CombinedData, style, period: int) -> None:
         )
 
     with sec_d:
-        st.markdown("### Total pixel distance — day vs night × LD / DD (combined)")
+        st.markdown("### Total distance — day vs night × LD / DD")
         st.caption(
-            "Each mosquito's LD/DD split uses **its own** experiment's LD→DD ZT hour, "
-            "so experiments with different light schedules are not blended."
+            "Each mosquito uses its own LD→DD ZT hour. "
+            "LD day/night = actual light · "
+            "DD subjective day/night = same ZT halves, lights off · "
+            "death cuts stop summing · no-data phases are blank (NaN)."
         )
         totals = cmb.phase_totals_combined(
             counts, groups, death_bins, cd.ld_end_by_idx, period
@@ -354,27 +356,27 @@ def _render_combined_figures(cd: cmb.CombinedData, style, period: int) -> None:
             base_style=style,
             level="####",
             customize=True,
-            what="Grouped bars: average total distance (± 1 SD) per kind for each phase.",
-            how="Combined across all experiments.",
+            what="Group mean total distance ± 1 SD for each phase.",
+            how="Combined across experiments.",
         )
         phase_totals_figure(totals, groups, gc, s10, key="cmb_fig10_phase")
 
         s10b = fig_header(
-            "Per-mosquito distribution (box + points)",
+            "Per-mosquito distribution",
             fig_id="cmb_fig10_box",
             base_style=style,
             level="####",
             customize=True,
-            what="Boxplots with individual mosquito points for each phase.",
-            how="Each dot is one mosquito from any experiment.",
+            what="Box + individual mosquito points per phase.",
+            how="One dot per mosquito (any experiment).",
         )
         phase_totals_box_figure(totals, groups, s10b, key="cmb_fig10_box")
 
-        with st.expander("Per-mosquito totals table", expanded=False):
+        with st.expander("Per-mosquito totals", expanded=False):
             show_cols = [c for c in totals_display.columns if c != "mosquito_idx"]
             st.dataframe(totals_display[show_cols].round(1), use_container_width=True)
             st.download_button(
-                "Download per-mosquito totals CSV",
+                "Download CSV",
                 data=totals_display[show_cols].to_csv(index=False),
                 file_name="combined_phase_totals_per_mosquito.csv",
                 mime="text/csv",
@@ -384,15 +386,15 @@ def _render_combined_figures(cd: cmb.CombinedData, style, period: int) -> None:
         summary = phase_summary_by_group(totals)
         summary_display = summary.copy()
         summary_display["group"] = summary_display["group"].map(style.display_group)
-        with st.expander("Group means ± 1 SD table", expanded=False):
+        with st.expander("Group means ± 1 SD", expanded=False):
             st.dataframe(summary_display.round(2), use_container_width=True)
 
         fig_header(
-            "Within-group: day vs night (LD and DD)",
+            "Within-group: day vs night",
             fig_id="cmb_fig10_within",
             base_style=style,
             level="####",
-            what="For each kind, test whether day totals differ from night (paired per mosquito).",
+            what="Paired day vs night within each kind (LD and DD).",
             how=stats_glossary_help(),
         )
         within = within_group_day_night_tests(totals)
@@ -409,12 +411,12 @@ def _render_combined_figures(cd: cmb.CombinedData, style, period: int) -> None:
             base_style=style,
             level="####",
             customize=True,
-            what="Kruskal–Wallis across kinds, then pairwise Mann–Whitney U (heatmap).",
+            what="Kruskal–Wallis + pairwise Mann–Whitney (heatmap).",
             how=stats_glossary_help(),
         )
         between = between_group_phase_tests(totals)
         stats_heatmap_figure(between, s10h, key="cmb_fig10_heat")
-        with st.expander("Full between-group stats table", expanded=False):
+        with st.expander("Between-group stats table", expanded=False):
             between_display = between.copy()
             between_display["p"] = between_display["p"].map(
                 lambda p: f"{p:.4g}" if np.isfinite(p) else "n/a"

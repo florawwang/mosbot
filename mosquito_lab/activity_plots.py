@@ -52,12 +52,12 @@ MOSQUITO_NUMBERS = list(range(1, 7))
 
 BAR_COLOR = "#ef3c26"
 
-PHASE_ORDER = ("LD day", "LD night", "DD day", "DD night")
+PHASE_ORDER = ("LD day", "LD night", "DD subjective day", "DD subjective night")
 PHASE_COLORS = {
     "LD day": "#f4d35e",
     "LD night": "#335c67",
-    "DD day": "#e9c46a",
-    "DD night": "#1b263b",
+    "DD subjective day": "#e9c46a",
+    "DD subjective night": "#1b263b",
 }
 FONT_CHOICES = [
     "DejaVu Sans",
@@ -461,45 +461,22 @@ def fig_guide(what: str, how: str, ask: str | None = None) -> None:
 
 def stats_glossary_help() -> str:
     return """
-**Stars (`* / ** / *** / ns`)**
-- `ns` = not significant (p ≥ 0.05)
-- `*` = p < 0.05
-- `**` = p < 0.01
-- `***` = p < 0.001
+**Stars:** `ns` p≥0.05 · `*` p<0.05 · `**` p<0.01 · `***` p<0.001
 
-**Wilcoxon signed-rank (within-group day vs night)**
-- Compares **paired** values from the **same** mosquitoes (e.g. each mosquito’s LD-day total vs its LD-night total).
-- Non-parametric (does not assume normality).
-- Used here when a group has **n ≥ 6**.
-- Small p → day and night totals differ systematically for that group.
+**Within-group (day vs night):** Wilcoxon (n≥6) or paired t-test (n<6) — same mosquitoes, paired.
 
-**Paired t-test**
-- Same idea as Wilcoxon (paired day vs night), but assumes roughly normal differences.
-- Used here as a fallback when **n < 6**.
+**Between groups:** Kruskal–Wallis (any difference?) then Mann–Whitney U (which pairs?).
 
-**Kruskal–Wallis (across all groups)**
-- Asks: “Do **any** of these groups differ?” for one phase (e.g. LD night).
-- Non-parametric analog of one-way ANOVA.
-- Small p → at least one group’s distribution differs from another’s — not which pair.
-
-**Mann–Whitney U (pairwise between groups)**
-- Compares **two** independent groups (different mosquitoes), e.g. Female WT vs Female KO.
-- Non-parametric analog of a two-sample t-test.
-- Small p → the two groups’ totals for that phase differ.
-- The heatmap shows these pairwise p-values (green = more significant / smaller p on the color scale).
-
-**Caveats**
-- These are exploratory summaries; they do not correct for testing many phases/pairs at once.
-- Small n and death cuts reduce power. Interpret stars as guides, not definitive biology.
+Exploratory — no multiple-testing correction.
 """
 
 
 def stats_glossary() -> None:
-    """Plain-language explainers for the Section D tests (hover help)."""
+    """Short explainers for Section D tests (hover help)."""
     _title_with_help(
         "Stats guide",
         level="####",
-        what="What the significance tests and stars mean.",
+        what="Significance stars and which test is used.",
         how=stats_glossary_help(),
     )
 
@@ -1098,16 +1075,17 @@ def shade_dark_phases(ax, ld_end: int, x_end: float, period: int) -> None:
 
 
 def classify_bin_phase(bin_idx: int, start_zt: float, period: int, ld_end: int) -> str:
-    """Classify a bin as LD/DD day or night using the same ZT bands as grey shading.
+    """Classify a bin as LD day/night or DD subjective day/night (ZT bands).
 
     - **Day** (unshaded): ``ZT < period/2``
     - **Night** (grey band): ``ZT >= period/2``
     - **LD vs DD**: bin index vs ``ld_end``
+    - In DD, day/night are *subjective* (same ZT halves; lights stay off).
     """
     zt = (start_zt + bin_idx) % period
     is_day = zt < (period / 2)
     if bin_idx >= ld_end:
-        return "DD day" if is_day else "DD night"
+        return "DD subjective day" if is_day else "DD subjective night"
     return "LD day" if is_day else "LD night"
 
 
@@ -1119,11 +1097,16 @@ def phase_totals_table(
     period: int,
     ld_end: int,
 ) -> pd.DataFrame:
-    """Per-mosquito summed pixel distance by LD/DD × day/night (ZT bands)."""
+    """Per-mosquito summed pixel distance by LD/DD × day/night (ZT bands).
+
+    Phases with no live bins (e.g. died before DD) are ``NaN``, not 0 — so they
+    don't drag group means down.
+    """
     rows: list[dict] = []
     for group_name, indices in groups.items():
         for j, idx in enumerate(indices):
             totals = {phase: 0.0 for phase in PHASE_ORDER}
+            hours = {phase: 0 for phase in PHASE_ORDER}
             death = death_bins.get(idx, math.inf)
             for i, val in enumerate(counts[idx]):
                 if i >= death:
@@ -1132,17 +1115,30 @@ def phase_totals_table(
                     continue
                 phase = classify_bin_phase(i, start_zt, period, ld_end)
                 totals[phase] += float(val)
+                hours[phase] += 1
+            for phase in PHASE_ORDER:
+                if hours[phase] == 0:
+                    totals[phase] = float("nan")
+            ld = _nansum_or_nan(totals["LD day"], totals["LD night"])
+            dd = _nansum_or_nan(totals["DD subjective day"], totals["DD subjective night"])
             rows.append(
                 {
                     "group": group_name,
                     "mosquito": j + 1,
                     "mosquito_idx": idx,
                     **totals,
-                    "LD total": totals["LD day"] + totals["LD night"],
-                    "DD total": totals["DD day"] + totals["DD night"],
+                    "LD total": ld,
+                    "DD total": dd,
                 }
             )
     return pd.DataFrame(rows)
+
+
+def _nansum_or_nan(*vals: float) -> float:
+    arr = np.asarray(vals, dtype=float)
+    if not np.any(np.isfinite(arr)):
+        return float("nan")
+    return float(np.nansum(arr))
 
 
 def _p_stars(p: float) -> str:
@@ -1174,18 +1170,20 @@ def within_group_day_night_tests(totals: pd.DataFrame) -> pd.DataFrame:
     rows = []
     comparisons = (
         ("LD", "LD day", "LD night"),
-        ("DD", "DD day", "DD night"),
+        ("DD", "DD subjective day", "DD subjective night"),
     )
     for group_name, sub in totals.groupby("group", sort=False):
         for condition, day_col, night_col in comparisons:
             day = sub[day_col].to_numpy(dtype=float)
             night = sub[night_col].to_numpy(dtype=float)
-            n = len(sub)
+            mask = np.isfinite(day) & np.isfinite(night)
+            day, night = day[mask], night[mask]
+            n = int(mask.sum())
             p = float("nan")
             test = "n/a"
             note = ""
             if n < 2:
-                note = "need n≥2"
+                note = "need n≥2 with data in both phases"
             elif np.allclose(day, night):
                 p = 1.0
                 test = "identical"
@@ -1230,9 +1228,11 @@ def between_group_phase_tests(totals: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for phase in list(PHASE_ORDER) + ["LD total", "DD total"]:
         samples = [
-            totals.loc[totals["group"] == g, phase].to_numpy(dtype=float)
+            totals.loc[totals["group"] == g, phase]
+            .to_numpy(dtype=float)
             for g in group_names
         ]
+        samples = [s[np.isfinite(s)] for s in samples]
         valid = [s for s in samples if len(s) >= 1]
         if len(valid) < 2:
             rows.append(
@@ -1242,23 +1242,22 @@ def between_group_phase_tests(totals: pd.DataFrame) -> pd.DataFrame:
                     "test": "n/a",
                     "p": float("nan"),
                     "sig": "n/a",
-                    "note": "need ≥2 groups",
+                    "note": "need ≥2 groups with data",
                 }
             )
             continue
         try:
-            if all(len(s) >= 1 for s in samples) and len(group_names) >= 2:
-                h = stats.kruskal(*samples)
-                rows.append(
-                    {
-                        "phase": phase,
-                        "comparison": "all groups",
-                        "test": "Kruskal–Wallis",
-                        "p": float(h.pvalue),
-                        "sig": _p_stars(float(h.pvalue)),
-                        "note": "",
-                    }
-                )
+            h = stats.kruskal(*valid)
+            rows.append(
+                {
+                    "phase": phase,
+                    "comparison": "all groups",
+                    "test": "Kruskal–Wallis",
+                    "p": float(h.pvalue),
+                    "sig": _p_stars(float(h.pvalue)),
+                    "note": "",
+                }
+            )
         except Exception as exc:
             rows.append(
                 {
@@ -2269,8 +2268,9 @@ def render_activity_graphs_body(settings: dict) -> None:
             }
         with st.expander("About DD (dark–dark)", expanded=False):
             st.markdown(
-                "**DD** = bins after the LD→DD switch (incubator stays dark).\n\n"
-                "- **DD day / DD night** still follow the same ZT bands as the grey shading\n"
+                "**DD** = bins after the LD→DD switch (lights stay off).\n\n"
+                "- **DD subjective day / night** use the same ZT halves as the grey bands "
+                "(not actual light)\n"
                 "- Subjective day = unshaded, subjective night = grey"
             )
         s_fig7 = fig_header(
@@ -2334,33 +2334,16 @@ def render_activity_graphs_body(settings: dict) -> None:
         )
 
     with sec_d:
-        st.markdown("### Total pixel distance — day vs night × LD / DD")
+        st.markdown("### Total distance — day vs night × LD / DD")
         ld_bins = max(0, min(ld_end_i, trace_len))
         dd_bins = max(0, trace_len - ld_end_i)
         if dd_bins and ld_bins:
             st.caption(
-                f"These are **summed** totals. This experiment has ~**{ld_bins} h of LD** "
-                f"vs ~**{dd_bins} h of DD**, so LD totals are larger mostly because the LD "
-                "window is longer (and death cuts trim late DD). Compare shapes/ratios, not "
-                "raw LD-vs-DD heights."
-            )
-        with st.expander("How phases & stats are computed", expanded=False):
-            st.markdown(
-                """
-**How phases are defined** (same rule as the grey bands on the graphs)
-- **LD vs DD:** bin index vs the LD→DD switch.
-- **Day** = unshaded ZT half (`ZT < period/2`).
-- **Night** = grey band (`ZT ≥ period/2`).
-- Applies in **both** LD and DD (subjective day/night after lights stay off).
-- Death cuts stop summing after a mosquito’s death bin.
-
-**What the plots show**
-- **Mean ± 1 SD bars:** group average total distance in each phase (error bars floored at 0).
-- **Box + points:** every mosquito’s total (spread / outliers).
-- **Stats heatmap:** pairwise group differences (Mann–Whitney p-values).
-"""
-                + "\n\n---\n\n"
-                + stats_glossary_help()
+                f"Summed totals · ~{ld_bins} h LD vs ~{dd_bins} h DD "
+                "(unequal windows — compare ratios, not raw LD vs DD heights). "
+                "LD day/night = actual light schedule · "
+                "DD subjective day/night = same ZT halves with lights off · "
+                "death cuts stop summing · no-data phases are blank (NaN)."
             )
 
         totals_display = totals.copy()
@@ -2372,40 +2355,30 @@ def render_activity_graphs_body(settings: dict) -> None:
             base_style=style,
             level="####",
             customize=True,
-            what="Grouped bars: average total distance (± 1 SD) per group for LD day, LD night, DD day, DD night.",
-            how="""
-- Tall bar = more cumulative movement in that phase.
-- Error bars = ± 1 SD across mosquitoes (lower whisker clipped at 0).
-- Compare day vs night *within* a group, and the same phase *across* groups.
-""",
-            ask="Is night activity higher than day activity in every genotype?",
+            what="Group mean total distance ± 1 SD for each phase.",
+            how="Error bars floored at 0.",
         )
         phase_totals_figure(totals, groups, group_colors, s_fig10_phase, key="fig10_phase")
 
         s_fig10_box = fig_header(
-            "Per-mosquito distribution (box + points)",
+            "Per-mosquito distribution",
             fig_id="fig10_box",
             base_style=style,
             level="####",
             customize=True,
-            what="Boxplots with individual mosquito points for each phase.",
-            how="""
-- Box = middle 50% of mosquitoes; line inside ≈ median.
-- Dots = individual mosquitoes (jittered).
-- Use this to see if a high mean is driven by one hyperactive mosquito.
-""",
-            ask="Are group differences driven by most mosquitoes, or one outlier?",
+            what="Box + individual mosquito points per phase.",
+            how="Shows spread / outliers behind the means.",
         )
         phase_totals_box_figure(totals, groups, s_fig10_box, key="fig10_box")
 
-        with st.expander("Per-mosquito totals table", expanded=False):
+        with st.expander("Per-mosquito totals", expanded=False):
             show_cols = [c for c in totals_display.columns if c != "mosquito_idx"]
             st.dataframe(
                 totals_display[show_cols].round(1),
                 use_container_width=True,
             )
             st.download_button(
-                "Download per-mosquito totals CSV",
+                "Download CSV",
                 data=totals_display[show_cols].to_csv(index=False),
                 file_name="phase_totals_per_mosquito.csv",
                 mime="text/csv",
@@ -2415,22 +2388,17 @@ def render_activity_graphs_body(settings: dict) -> None:
         summary = phase_summary_by_group(totals)
         summary_display = summary.copy()
         summary_display["group"] = summary_display["group"].map(style.display_group)
-        with st.expander("Group means ± 1 SD table", expanded=False):
+        with st.expander("Group means ± 1 SD", expanded=False):
             st.dataframe(summary_display.round(2), use_container_width=True)
 
         fig_header(
-            "Within-group: day vs night (LD and DD)",
+            "Within-group: day vs night",
             fig_id="fig10_within",
             base_style=style,
             level="####",
             customize=False,
-            what="For each group, test whether day totals differ from night totals (paired per mosquito).",
-            how="""
-- Uses **Wilcoxon signed-rank** (n≥6) or **paired t-test** (n<6).
-- Separate rows for LD and for DD.
-- Open the section **?** tip above for plain-language definitions.
-""",
-            ask="Within a genotype, is night activity significantly higher than day?",
+            what="Paired day vs night within each group (LD and DD).",
+            how=stats_glossary_help(),
         )
         within = within_group_day_night_tests(totals)
         within_display = within.copy()
@@ -2446,18 +2414,12 @@ def render_activity_graphs_body(settings: dict) -> None:
             base_style=style,
             level="####",
             customize=True,
-            what="First Kruskal–Wallis across all groups, then pairwise Mann–Whitney U (heatmap).",
-            how="""
-- **Kruskal–Wallis** (in the table): any overall group difference for that phase?
-- **Mann–Whitney heatmap:** which specific pairs differ? Cells show significance stars.
-- Diagonal is blank (a group vs itself).
-- Open the section **?** tip for plain-language definitions.
-""",
-            ask="Which pairwise genotype/sex contrasts are significant in LD night vs DD night?",
+            what="Kruskal–Wallis + pairwise Mann–Whitney (heatmap).",
+            how=stats_glossary_help(),
         )
         between = between_group_phase_tests(totals)
         stats_heatmap_figure(between, s_fig10_heat, key="fig10_heat")
-        with st.expander("Full between-group stats table", expanded=False):
+        with st.expander("Between-group stats table", expanded=False):
             between_display = between.copy()
             between_display["p"] = between_display["p"].map(
                 lambda p: f"{p:.4g}" if np.isfinite(p) else "n/a"

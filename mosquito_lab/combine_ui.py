@@ -12,13 +12,13 @@ helpers in :mod:`mosquito_lab.activity_plots`.
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
 from mosquito_lab import combine as cmb
 from mosquito_lab.activity_plots import (
     MOSQUITO_KINDS,
+    apply_mosquito_exclusions,
     build_counts,
     death_bin_by_idx,
     death_comparison,
@@ -30,14 +30,8 @@ from mosquito_lab.activity_plots import (
     load_activity,
     parse_deaths_from_csv,
     parse_index_spec,
-    phase_summary_by_group,
-    phase_totals_box_figure,
-    phase_totals_figure,
+    render_exclusion_control,
     render_plot_style_controls,
-    stats_glossary_help,
-    stats_heatmap_figure,
-    within_group_day_night_tests,
-    between_group_phase_tests,
 )
 
 # Sensible default column layout (4 kinds x 6 mosquitoes = 24 wells).
@@ -209,7 +203,7 @@ def _configure_experiment(file, bin_size: int) -> cmb.ExperimentSpec | None:
 
 
 def _render_combined_figures(cd: cmb.CombinedData, style, period: int) -> None:
-    """Figures 3-9 + Section D on the combined ZT grid (start_zt anchored at 0)."""
+    """Figures 3-9 on the combined ZT grid (start_zt anchored at 0)."""
     counts = cd.counts
     counts_ld = cd.counts_ld
     counts_dd = cd.counts_dd
@@ -217,12 +211,11 @@ def _render_combined_figures(cd: cmb.CombinedData, style, period: int) -> None:
     gc = cd.group_colors
     death_bins = cd.death_bins
 
-    sec_a, sec_b, sec_c, sec_d = st.tabs(
+    sec_a, sec_b, sec_c = st.tabs(
         [
             "Section A — General",
             "Section B — LD",
             "Section C — DD",
-            "Section D — Day/night totals",
         ]
     )
 
@@ -336,106 +329,6 @@ def _render_combined_figures(cd: cmb.CombinedData, style, period: int) -> None:
             title="DD (24 h-folded) mean ± 1 SD (combined)", key="cmb_fig9", style=s9,
         )
 
-    with sec_d:
-        st.markdown("### Total distance — day vs night × LD / DD")
-        st.caption(
-            "Each mosquito uses its own LD→DD ZT hour. "
-            "LD day/night = actual light · "
-            "DD subjective day/night = same ZT halves, lights off · "
-            "death cuts stop summing · no-data phases are blank (NaN)."
-        )
-        totals = cmb.phase_totals_combined(
-            counts, groups, death_bins, cd.ld_end_by_idx, period
-        )
-        totals_display = totals.copy()
-        totals_display["group"] = totals_display["group"].map(style.display_group)
-
-        s10 = fig_header(
-            "Mean ± 1 SD by phase",
-            fig_id="cmb_fig10_phase",
-            base_style=style,
-            level="####",
-            customize=True,
-            what="Group mean total distance ± 1 SD for each phase.",
-            how="Combined across experiments.",
-        )
-        phase_totals_figure(totals, groups, gc, s10, key="cmb_fig10_phase")
-
-        s10b = fig_header(
-            "Per-mosquito distribution",
-            fig_id="cmb_fig10_box",
-            base_style=style,
-            level="####",
-            customize=True,
-            what="Box + individual mosquito points per phase.",
-            how="One dot per mosquito (any experiment).",
-        )
-        phase_totals_box_figure(totals, groups, s10b, key="cmb_fig10_box")
-
-        with st.expander("Per-mosquito totals", expanded=False):
-            show_cols = [c for c in totals_display.columns if c != "mosquito_idx"]
-            st.dataframe(totals_display[show_cols].round(1), use_container_width=True)
-            st.download_button(
-                "Download CSV",
-                data=totals_display[show_cols].to_csv(index=False),
-                file_name="combined_phase_totals_per_mosquito.csv",
-                mime="text/csv",
-                key="cmb_dl_totals",
-            )
-
-        summary = phase_summary_by_group(totals)
-        summary_display = summary.copy()
-        summary_display["group"] = summary_display["group"].map(style.display_group)
-        with st.expander("Group means ± 1 SD", expanded=False):
-            st.dataframe(summary_display.round(2), use_container_width=True)
-
-        fig_header(
-            "Within-group: day vs night",
-            fig_id="cmb_fig10_within",
-            base_style=style,
-            level="####",
-            what="Paired day vs night within each kind (LD and DD).",
-            how=stats_glossary_help(),
-        )
-        within = within_group_day_night_tests(totals)
-        within_display = within.copy()
-        within_display["group"] = within_display["group"].map(style.display_group)
-        within_display["p"] = within_display["p"].map(
-            lambda p: f"{p:.4g}" if np.isfinite(p) else "n/a"
-        )
-        st.dataframe(within_display, use_container_width=True)
-
-        s10h = fig_header(
-            "Between-group comparisons",
-            fig_id="cmb_fig10_heat",
-            base_style=style,
-            level="####",
-            customize=True,
-            what="Kruskal–Wallis + pairwise Mann–Whitney (heatmap).",
-            how=stats_glossary_help(),
-        )
-        between = between_group_phase_tests(totals)
-        stats_heatmap_figure(between, s10h, key="cmb_fig10_heat")
-        with st.expander("Between-group stats table", expanded=False):
-            between_display = between.copy()
-            between_display["p"] = between_display["p"].map(
-                lambda p: f"{p:.4g}" if np.isfinite(p) else "n/a"
-            )
-            st.dataframe(between_display, use_container_width=True)
-        st.download_button(
-            "Download stats CSV",
-            data=pd.concat(
-                [
-                    within.assign(kind="within day vs night"),
-                    between.assign(kind="between groups"),
-                ],
-                ignore_index=True,
-            ).to_csv(index=False),
-            file_name="combined_phase_totals_stats.csv",
-            mime="text/csv",
-            key="cmb_dl_stats",
-        )
-
 
 def render_combine_body(settings: dict) -> None:
     """Main panel: upload experiments, configure each, then plot combined figures."""
@@ -510,5 +403,23 @@ def render_combine_body(settings: dict) -> None:
         summary_rows.append(row)
     if summary_rows:
         st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+
+    st.markdown("#### Exclude mosquitoes (optional)")
+    st.caption("Drop specific wells (e.g. dead-on-arrival or noisy) from every combined graph and stat.")
+
+    def _combined_label(i: int) -> str:
+        kind, num = cd.labels.get(i, ("?", 0))
+        exp = cd.exp_by_idx.get(i, "?")
+        return f"{kind} #{num} · {exp} (idx {i})"
+
+    excluded = render_exclusion_control(
+        cd.groups, key="exclude_mosq_combined", label_fn=_combined_label
+    )
+    cd.groups, cd.group_colors = apply_mosquito_exclusions(
+        cd.groups, cd.group_colors, excluded
+    )
+    if not cd.groups:
+        st.warning("Every mosquito is excluded — clear some exclusions to see plots.")
+        return
 
     _render_combined_figures(cd, style, period)

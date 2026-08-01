@@ -1,4 +1,4 @@
-"""Activity analysis plots (copy of activity_explorer.py logic for cloud_inference)."""
+"""Activity analysis plots: actograms, LD/DD profiles, and phase totals."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import io
 import math
 import re
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 
 import matplotlib
 
@@ -16,21 +15,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-from PIL import Image
-from scipy import stats
 
 from mosquito_lab.paths import mosquito_project_dir
 
 EXPERIMENTS_DIR = mosquito_project_dir() / "experiments"
-
-DEFAULT_GROUPS = pd.DataFrame(
-    [
-        {"name": "Female sg (WT)", "start": 0, "end": 6, "color": "#e63946"},
-        {"name": "Male sg (WT)", "start": 6, "end": 12, "color": "#457b9d"},
-        {"name": "Female KO", "start": 12, "end": 18, "color": "#f4a261"},
-        {"name": "Male KO", "start": 18, "end": 24, "color": "#2a9d8f"},
-    ]
-)
 
 MOSQUITO_KINDS = [
     "Female sg (WT)",
@@ -52,13 +40,6 @@ MOSQUITO_NUMBERS = list(range(1, 7))
 
 BAR_COLOR = "#ef3c26"
 
-PHASE_ORDER = ("LD day", "LD night", "DD subjective day", "DD subjective night")
-PHASE_COLORS = {
-    "LD day": "#f4d35e",
-    "LD night": "#335c67",
-    "DD subjective day": "#e9c46a",
-    "DD subjective night": "#1b263b",
-}
 FONT_CHOICES = [
     "DejaVu Sans",
     "Arial",
@@ -330,6 +311,25 @@ def _title_with_help(
     )
 
 
+def help_popover(body_md: str, *, label: str = "?") -> None:
+    """A click-to-expand '?' button that reveals an explanation.
+
+    Use this to tuck away wordy inline captions: the text is one click away
+    instead of always on screen.
+    """
+    with st.popover(label):
+        st.markdown(body_md)
+
+
+def header_with_help(title: str, body_md: str, *, level: str = "###") -> None:
+    """Section title with a click-to-expand '?' popover holding the explanation."""
+    head_col, help_col = st.columns([0.85, 0.15])
+    with head_col:
+        st.markdown(f"{level} {title}")
+    with help_col:
+        help_popover(body_md)
+
+
 _FIG_CUSTOM_PREFIX = "figfmt::"
 
 
@@ -454,33 +454,6 @@ def fig_header(
     return base
 
 
-def fig_guide(what: str, how: str, ask: str | None = None) -> None:
-    """Deprecated — prefer fig_header / _title_with_help."""
-    _title_with_help("", what=what, how=how, ask=ask)
-
-
-def stats_glossary_help() -> str:
-    return """
-**Stars:** `ns` p≥0.05 · `*` p<0.05 · `**` p<0.01 · `***` p<0.001
-
-**Within-group (day vs night):** Wilcoxon (n≥6) or paired t-test (n<6) — same mosquitoes, paired.
-
-**Between groups:** Kruskal–Wallis (any difference?) then Mann–Whitney U (which pairs?).
-
-Exploratory — no multiple-testing correction.
-"""
-
-
-def stats_glossary() -> None:
-    """Short explainers for Section D tests (hover help)."""
-    _title_with_help(
-        "Stats guide",
-        level="####",
-        what="Significance stars and which test is used.",
-        how=stats_glossary_help(),
-    )
-
-
 def bin_sum(size: int, arr: np.ndarray) -> np.ndarray:
     arr = np.asarray(arr, dtype=float)
     return np.array([np.sum(arr[i : i + size]) for i in range(0, len(arr), size)])
@@ -575,6 +548,63 @@ def build_idx_to_label(groups: dict[str, list[int]]) -> dict[int, tuple[str, int
         for j, idx in enumerate(indices):
             idx_to_label[idx] = (name, j + 1)
     return idx_to_label
+
+
+def apply_mosquito_exclusions(
+    groups: dict[str, list[int]],
+    group_colors: dict[str, str],
+    excluded: set[int],
+) -> tuple[dict[str, list[int]], dict[str, str]]:
+    """Drop excluded mosquito indices from every group.
+
+    Groups left with no mosquitoes are removed entirely (so plots don't try to
+    average an empty set). Returns filtered ``(groups, group_colors)``; the
+    originals are left untouched.
+    """
+    if not excluded:
+        return groups, group_colors
+    filtered = {
+        name: kept
+        for name, idxs in groups.items()
+        if (kept := [i for i in idxs if i not in excluded])
+    }
+    colors = {name: c for name, c in group_colors.items() if name in filtered}
+    return filtered, colors
+
+
+def render_exclusion_control(
+    groups: dict[str, list[int]],
+    *,
+    key: str,
+    label_fn=None,
+) -> set[int]:
+    """Multiselect to drop specific mosquitoes from every figure and statistic.
+
+    Options are every mosquito currently assigned to a group. ``label_fn(idx)``
+    customizes each option's display (e.g. to add experiment names in the
+    combined view); the default shows ``mosquito_<idx> · <group> #<n>``.
+    Returns the set of excluded indices.
+    """
+    idx_to_label = build_idx_to_label(groups)
+    options = sorted(idx_to_label)
+
+    def _fmt(i: int) -> str:
+        if label_fn is not None:
+            return label_fn(i)
+        grp, num = idx_to_label[i]
+        return f"mosquito_{i} · {grp} #{num}"
+
+    chosen = st.multiselect(
+        "Exclude mosquitoes (optional)",
+        options=options,
+        format_func=_fmt,
+        key=key,
+        help="Pick any mosquitoes to remove from every graph and statistic. "
+        "Leave empty to keep all.",
+    )
+    if chosen:
+        st.caption(f"Excluding {len(chosen)} of {len(options)} mosquitoes — {len(options) - len(chosen)} remain.")
+    return set(chosen)
 
 
 def death_bin_by_idx(
@@ -792,8 +822,8 @@ def render_group_layout_table(n_mosq: int) -> pd.DataFrame:
 def render_group_and_death_controls(
     n_mosq: int,
     max_frames: int,
-) -> tuple[dict[str, list[int]], dict[str, str], list[dict]]:
-    """UI for group layout table and death calls."""
+) -> tuple[dict[str, list[int]], dict[str, str], list[dict], set[int]]:
+    """UI for group layout table, mosquito exclusions, and death calls."""
     st.markdown("#### 3. Mosquito-kind layout")
     st.caption(
         "Four rows — pick the mosquito kind, which CSV indices belong to it "
@@ -801,6 +831,10 @@ def render_group_and_death_controls(
     )
 
     _, groups, group_colors = render_group_layout_table(n_mosq)
+
+    st.markdown("#### 3b. Exclude mosquitoes (optional)")
+    st.caption("Drop specific wells (e.g. dead-on-arrival or noisy) from every graph and stat.")
+    excluded = render_exclusion_control(groups, key="exclude_mosq_single")
 
     st.markdown("#### 4. Death calls (optional)")
     st.caption(
@@ -870,7 +904,7 @@ def render_group_and_death_controls(
 
     active_groups = list(groups.keys())
     if not active_groups:
-        return groups, group_colors, st.session_state[deaths_key]
+        return groups, group_colors, st.session_state[deaths_key], excluded
 
     st.markdown("**Or add one manually**")
     hdr1, hdr2, hdr3, _ = st.columns([2, 1, 2, 1])
@@ -950,7 +984,7 @@ def render_group_and_death_controls(
     else:
         st.caption("No death calls added yet.")
 
-    return groups, group_colors, deaths
+    return groups, group_colors, deaths, excluded
 
 
 def apply_death_cut(
@@ -1074,234 +1108,6 @@ def shade_dark_phases(ax, ld_end: int, x_end: float, period: int) -> None:
         start += period
 
 
-def classify_bin_phase(bin_idx: int, start_zt: float, period: int, ld_end: int) -> str:
-    """Classify a bin as LD day/night or DD subjective day/night (ZT bands).
-
-    - **Day** (unshaded): ``ZT < period/2``
-    - **Night** (grey band): ``ZT >= period/2``
-    - **LD vs DD**: bin index vs ``ld_end``
-    - In DD, day/night are *subjective* (same ZT halves; lights stay off).
-    """
-    zt = (start_zt + bin_idx) % period
-    is_day = zt < (period / 2)
-    if bin_idx >= ld_end:
-        return "DD subjective day" if is_day else "DD subjective night"
-    return "LD day" if is_day else "LD night"
-
-
-def phase_totals_table(
-    counts: list[np.ndarray],
-    groups: dict[str, list[int]],
-    death_bins: dict[int, int],
-    start_zt: float,
-    period: int,
-    ld_end: int,
-) -> pd.DataFrame:
-    """Per-mosquito summed pixel distance by LD/DD × day/night (ZT bands).
-
-    Phases with no live bins (e.g. died before DD) are ``NaN``, not 0 — so they
-    don't drag group means down.
-    """
-    rows: list[dict] = []
-    for group_name, indices in groups.items():
-        for j, idx in enumerate(indices):
-            totals = {phase: 0.0 for phase in PHASE_ORDER}
-            hours = {phase: 0 for phase in PHASE_ORDER}
-            death = death_bins.get(idx, math.inf)
-            for i, val in enumerate(counts[idx]):
-                if i >= death:
-                    break
-                if not np.isfinite(val):
-                    continue
-                phase = classify_bin_phase(i, start_zt, period, ld_end)
-                totals[phase] += float(val)
-                hours[phase] += 1
-            for phase in PHASE_ORDER:
-                if hours[phase] == 0:
-                    totals[phase] = float("nan")
-            ld = _nansum_or_nan(totals["LD day"], totals["LD night"])
-            dd = _nansum_or_nan(totals["DD subjective day"], totals["DD subjective night"])
-            rows.append(
-                {
-                    "group": group_name,
-                    "mosquito": j + 1,
-                    "mosquito_idx": idx,
-                    **totals,
-                    "LD total": ld,
-                    "DD total": dd,
-                }
-            )
-    return pd.DataFrame(rows)
-
-
-def _nansum_or_nan(*vals: float) -> float:
-    arr = np.asarray(vals, dtype=float)
-    if not np.any(np.isfinite(arr)):
-        return float("nan")
-    return float(np.nansum(arr))
-
-
-def _p_stars(p: float) -> str:
-    if not np.isfinite(p):
-        return "n/a"
-    if p < 0.001:
-        return "***"
-    if p < 0.01:
-        return "**"
-    if p < 0.05:
-        return "*"
-    return "ns"
-
-
-def phase_summary_by_group(totals: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    for group_name, sub in totals.groupby("group", sort=False):
-        row: dict = {"group": group_name, "n": len(sub)}
-        for col in list(PHASE_ORDER) + ["LD total", "DD total"]:
-            vals = sub[col].to_numpy(dtype=float)
-            row[f"{col} mean"] = float(np.nanmean(vals))
-            row[f"{col} SD"] = float(np.nanstd(vals, ddof=1)) if len(vals) > 1 else 0.0
-        rows.append(row)
-    return pd.DataFrame(rows)
-
-
-def within_group_day_night_tests(totals: pd.DataFrame) -> pd.DataFrame:
-    """Paired day vs night tests within each group for LD and DD."""
-    rows = []
-    comparisons = (
-        ("LD", "LD day", "LD night"),
-        ("DD", "DD subjective day", "DD subjective night"),
-    )
-    for group_name, sub in totals.groupby("group", sort=False):
-        for condition, day_col, night_col in comparisons:
-            day = sub[day_col].to_numpy(dtype=float)
-            night = sub[night_col].to_numpy(dtype=float)
-            mask = np.isfinite(day) & np.isfinite(night)
-            day, night = day[mask], night[mask]
-            n = int(mask.sum())
-            p = float("nan")
-            test = "n/a"
-            note = ""
-            if n < 2:
-                note = "need n≥2 with data in both phases"
-            elif np.allclose(day, night):
-                p = 1.0
-                test = "identical"
-            else:
-                try:
-                    if n >= 6:
-                        stat = stats.wilcoxon(
-                            day, night, zero_method="wilcox", alternative="two-sided"
-                        )
-                        p = float(stat.pvalue)
-                        test = "Wilcoxon signed-rank"
-                    else:
-                        stat = stats.ttest_rel(day, night, nan_policy="omit")
-                        p = float(stat.pvalue)
-                        test = "paired t-test (n<6)"
-                except Exception as exc:
-                    note = str(exc)
-            rows.append(
-                {
-                    "group": group_name,
-                    "condition": condition,
-                    "comparison": f"{day_col} vs {night_col}",
-                    "n": n,
-                    "day mean": float(np.nanmean(day)) if n else float("nan"),
-                    "night mean": float(np.nanmean(night)) if n else float("nan"),
-                    "test": test,
-                    "p": p,
-                    "sig": _p_stars(p),
-                    "note": note,
-                }
-            )
-    return pd.DataFrame(rows)
-
-
-# Back-compat alias
-within_group_light_dark_tests = within_group_day_night_tests
-
-
-def between_group_phase_tests(totals: pd.DataFrame) -> pd.DataFrame:
-    """Kruskal–Wallis across groups for each phase, plus pairwise Mann–Whitney."""
-    group_names = list(dict.fromkeys(totals["group"].tolist()))
-    rows = []
-    for phase in list(PHASE_ORDER) + ["LD total", "DD total"]:
-        samples = [
-            totals.loc[totals["group"] == g, phase]
-            .to_numpy(dtype=float)
-            for g in group_names
-        ]
-        samples = [s[np.isfinite(s)] for s in samples]
-        valid = [s for s in samples if len(s) >= 1]
-        if len(valid) < 2:
-            rows.append(
-                {
-                    "phase": phase,
-                    "comparison": "all groups",
-                    "test": "n/a",
-                    "p": float("nan"),
-                    "sig": "n/a",
-                    "note": "need ≥2 groups with data",
-                }
-            )
-            continue
-        try:
-            h = stats.kruskal(*valid)
-            rows.append(
-                {
-                    "phase": phase,
-                    "comparison": "all groups",
-                    "test": "Kruskal–Wallis",
-                    "p": float(h.pvalue),
-                    "sig": _p_stars(float(h.pvalue)),
-                    "note": "",
-                }
-            )
-        except Exception as exc:
-            rows.append(
-                {
-                    "phase": phase,
-                    "comparison": "all groups",
-                    "test": "Kruskal–Wallis",
-                    "p": float("nan"),
-                    "sig": "n/a",
-                    "note": str(exc),
-                }
-            )
-        for i in range(len(group_names)):
-            for j in range(i + 1, len(group_names)):
-                a = samples[i]
-                b = samples[j]
-                if len(a) < 1 or len(b) < 1:
-                    continue
-                try:
-                    u = stats.mannwhitneyu(a, b, alternative="two-sided")
-                    p = float(u.pvalue)
-                    rows.append(
-                        {
-                            "phase": phase,
-                            "comparison": f"{group_names[i]} vs {group_names[j]}",
-                            "test": "Mann–Whitney U",
-                            "p": p,
-                            "sig": _p_stars(p),
-                            "note": "",
-                        }
-                    )
-                except Exception as exc:
-                    rows.append(
-                        {
-                            "phase": phase,
-                            "comparison": f"{group_names[i]} vs {group_names[j]}",
-                            "test": "Mann–Whitney U",
-                            "p": float("nan"),
-                            "sig": "n/a",
-                            "note": str(exc),
-                        }
-                    )
-    return pd.DataFrame(rows)
-
-
 def fig_to_png_bytes(fig) -> bytes:
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=110)
@@ -1323,33 +1129,6 @@ def show_and_offer(fig, filename: str, key: str, *, show: bool = True):
     )
     plt.close(fig)
     return None
-
-
-def stitch_figures(
-    fig_a,
-    fig_b,
-    *,
-    layout: str = "side-by-side",
-) -> bytes:
-    """Combine two matplotlib figures into one PNG (side-by-side or stacked)."""
-    img_a = Image.open(io.BytesIO(fig_to_png_bytes(fig_a))).convert("RGB")
-    img_b = Image.open(io.BytesIO(fig_to_png_bytes(fig_b))).convert("RGB")
-    if layout == "stacked":
-        width = max(img_a.width, img_b.width)
-        height = img_a.height + img_b.height + 16
-        canvas = Image.new("RGB", (width, height), (255, 255, 255))
-        canvas.paste(img_a, ((width - img_a.width) // 2, 0))
-        canvas.paste(img_b, ((width - img_b.width) // 2, img_a.height + 16))
-    else:
-        height = max(img_a.height, img_b.height)
-        width = img_a.width + img_b.width + 16
-        canvas = Image.new("RGB", (width, height), (255, 255, 255))
-        canvas.paste(img_a, (0, (height - img_a.height) // 2))
-        canvas.paste(img_b, (img_a.width + 16, (height - img_b.height) // 2))
-    buf = io.BytesIO()
-    canvas.save(buf, format="PNG")
-    buf.seek(0)
-    return buf.read()
 
 
 def actogram_grid(
@@ -1606,205 +1385,6 @@ def folded_line(
         return show_and_offer(fig, f"{key}.png", key=key, show=show)
 
 
-def phase_totals_figure(
-    totals: pd.DataFrame,
-    groups: dict[str, list[int]],
-    group_colors: dict[str, str],
-    style: PlotStyle,
-    key: str,
-    show: bool = True,
-):
-    """Grouped bar chart: mean ± 1 SD total distance by phase for each group."""
-    order = list(groups.keys())
-    phases = list(PHASE_ORDER)
-    x = np.arange(len(order))
-    width = 0.22
-    with plt.rc_context(style.rc()):
-        fig, ax = plt.subplots(figsize=style.figsize(10, 5.5))
-        for i, phase in enumerate(phases):
-            means = []
-            err_lo = []
-            err_hi = []
-            for g in order:
-                vals = totals.loc[totals["group"] == g, phase].to_numpy(dtype=float)
-                mean = float(np.nanmean(vals)) if len(vals) else 0.0
-                sd = (
-                    float(np.nanstd(vals, ddof=1))
-                    if len(vals) > 1
-                    else 0.0
-                )
-                means.append(mean)
-                # Clip lower whisker at 0 — distance totals can't be negative
-                err_lo.append(min(sd, mean))
-                err_hi.append(sd)
-            offset = (i - (len(phases) - 1) / 2) * width
-            bars = ax.bar(
-                x + offset,
-                means,
-                width,
-                yerr=np.array([err_lo, err_hi]),
-                capsize=3,
-                label=phase,
-                color=PHASE_COLORS.get(phase, BAR_COLOR),
-                edgecolor="white",
-                linewidth=0.6,
-            )
-            for bar, mean in zip(bars, means):
-                if mean > 0:
-                    ax.text(
-                        bar.get_x() + bar.get_width() / 2,
-                        bar.get_height(),
-                        f"{mean:.0f}",
-                        ha="center",
-                        va="bottom",
-                        fontsize=max(7, style.tick_size - 1),
-                    )
-        ax.set_xticks(x)
-        ax.set_xticklabels([style.display_group(g) for g in order])
-        ax.set_ylabel(style.y_label("Mean total distance ± 1 SD (pixel units)"))
-        ax.set_xlabel(style.x_label("Group"))
-        ax.set_ylim(bottom=0)
-        ax.legend(title="Phase", framealpha=0.9)
-        ax.set_title(style.compose_title("Mean ± 1 SD — total distance by day/night × LD/DD"))
-        ax.text(
-            0.99,
-            0.98,
-            "Error bars = ± 1 SD (floored at 0)",
-            transform=ax.transAxes,
-            ha="right",
-            va="top",
-            fontsize=max(8, style.tick_size),
-            style="italic",
-        )
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        fig.tight_layout()
-        return show_and_offer(fig, f"{key}_phase_totals.png", key=key, show=show)
-
-
-def phase_totals_box_figure(
-    totals: pd.DataFrame,
-    groups: dict[str, list[int]],
-    style: PlotStyle,
-    key: str,
-    show: bool = True,
-):
-    """Box + strip plot of per-mosquito totals by phase (alternative to tables)."""
-    order = list(groups.keys())
-    phases = list(PHASE_ORDER)
-    n_phases = len(phases)
-    with plt.rc_context(style.rc()):
-        fig, axes = plt.subplots(
-            1, n_phases, figsize=style.figsize(3.2 * n_phases, 4.8), squeeze=False
-        )
-        for col, phase in enumerate(phases):
-            ax = axes[0][col]
-            data = [
-                totals.loc[totals["group"] == g, phase].to_numpy(dtype=float)
-                for g in order
-            ]
-            bp = ax.boxplot(
-                data,
-                patch_artist=True,
-                showfliers=False,
-            )
-            ax.set_xticks(range(1, len(order) + 1))
-            ax.set_xticklabels([style.display_group(g) for g in order])
-            for patch, g in zip(bp["boxes"], order):
-                patch.set_facecolor(PHASE_COLORS.get(phase, BAR_COLOR))
-                patch.set_alpha(0.35)
-            for i, (g, vals) in enumerate(zip(order, data), start=1):
-                if len(vals) == 0:
-                    continue
-                jitter = np.random.default_rng(i * 17 + col).uniform(-0.12, 0.12, size=len(vals))
-                ax.scatter(
-                    np.full(len(vals), i) + jitter,
-                    vals,
-                    s=28,
-                    color=PHASE_COLORS.get(phase, BAR_COLOR),
-                    alpha=0.85,
-                    zorder=3,
-                    edgecolors="white",
-                    linewidths=0.4,
-                )
-            ax.set_title(phase)
-            ax.tick_params(axis="x", rotation=25)
-            if col == 0:
-                ax.set_ylabel(style.y_label("Total distance"))
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-        fig.suptitle(style.compose_title("Per-mosquito totals by phase"))
-        fig.tight_layout()
-        return show_and_offer(fig, f"{key}_phase_box.png", key=key, show=show)
-
-
-def stats_heatmap_figure(
-    between: pd.DataFrame,
-    style: PlotStyle,
-    key: str,
-) -> None:
-    """Heatmap of pairwise Mann–Whitney p-values by phase."""
-    pairwise = between[
-        (between["test"] == "Mann–Whitney U") & between["p"].notna()
-    ].copy()
-    if pairwise.empty:
-        st.info("Not enough groups for a pairwise stats heatmap.")
-        return
-
-    phases = [p for p in list(PHASE_ORDER) + ["LD total", "DD total"] if p in set(pairwise["phase"])]
-    # Collect unique group names from comparison strings
-    names: list[str] = []
-    for comp in pairwise["comparison"]:
-        left, right = [s.strip() for s in str(comp).split(" vs ", 1)]
-        for n in (left, right):
-            if n not in names:
-                names.append(n)
-
-    n = len(names)
-    n_ph = len(phases)
-    with plt.rc_context(style.rc()):
-        fig, axes = plt.subplots(
-            1, n_ph, figsize=style.figsize(3.4 * n_ph, 3.6), squeeze=False
-        )
-        for col, phase in enumerate(phases):
-            ax = axes[0][col]
-            mat = np.full((n, n), np.nan)
-            sub = pairwise[pairwise["phase"] == phase]
-            for _, row in sub.iterrows():
-                left, right = [s.strip() for s in str(row["comparison"]).split(" vs ", 1)]
-                if left in names and right in names:
-                    i, j = names.index(left), names.index(right)
-                    mat[i, j] = row["p"]
-                    mat[j, i] = row["p"]
-            np.fill_diagonal(mat, 1.0)
-            im = ax.imshow(mat, cmap="RdYlGn_r", vmin=0, vmax=0.1, aspect="equal")
-            ax.set_xticks(range(n))
-            ax.set_yticks(range(n))
-            labels = [style.display_group(nm) for nm in names]
-            ax.set_xticklabels(labels, rotation=40, ha="right")
-            ax.set_yticklabels(labels)
-            ax.set_title(phase)
-            for i in range(n):
-                for j in range(n):
-                    p = mat[i, j]
-                    if not np.isfinite(p):
-                        continue
-                    ax.text(
-                        j,
-                        i,
-                        _p_stars(p) if i != j else "—",
-                        ha="center",
-                        va="center",
-                        fontsize=max(7, style.tick_size - 1),
-                        color="black",
-                    )
-            if col == n_ph - 1:
-                fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="p-value")
-        fig.suptitle(style.compose_title("Pairwise significance (Mann–Whitney)"))
-        fig.tight_layout()
-        show_and_offer(fig, f"{key}_stats_heatmap.png", key=key)
-
-
 def find_default_csv() -> str:
     if EXPERIMENTS_DIR.exists():
         hits = sorted(EXPERIMENTS_DIR.glob("27 *box1/*activity*.csv"))
@@ -1970,107 +1550,6 @@ def render_plot_style_controls() -> PlotStyle:
 
 
 # Compare-view figure id -> the fig_header fig_id whose per-figure overrides apply.
-_COMPARE_TO_FIGID = {
-    "fig3": "fig3",
-    "fig4": "fig4",
-    "fig5": "fig5",
-    "fig6": "fig6",
-    "fig7": "fig7",
-    "fig8": "fig8",
-    "fig9": "fig9",
-    "fig10_bars": "fig10_phase",
-    "fig10_box": "fig10_box",
-}
-
-
-def build_selected_figure(
-    choice: str,
-    *,
-    counts,
-    groups,
-    group_colors,
-    start_zt,
-    period_i,
-    ld_end_i,
-    death_bins,
-    means_death,
-    totals,
-    style: PlotStyle,
-):
-    """Build one comparable figure (no Streamlit display). Returns matplotlib Figure."""
-    key = f"compare_build_{choice}"
-    # Honour each figure's own per-graph customization in the compare/mix view.
-    style = read_fig_style(_COMPARE_TO_FIGID.get(choice, ""), style)
-    if choice == "fig3":
-        _means, fig = death_comparison(
-            counts, groups, group_colors, start_zt, period_i, ld_end_i,
-            death_bins, key=key, style=style, show=False,
-        )
-        return fig
-    if choice == "fig4":
-        return full_period_bar(
-            counts, groups, group_colors, start_zt, period_i,
-            lo=0, hi=ld_end_i, ld_end=ld_end_i,
-            title="Full LD period, averaged across mosquitoes",
-            xlabel="ZT / experimental hour", key=key, style=style, show=False,
-            death_bins=death_bins,
-        )
-    if choice == "fig5":
-        return folded_bar(
-            counts, groups, group_colors, start_zt, period_i,
-            lo=0, hi=ld_end_i, death_bins=death_bins,
-            title="LD, 24 h-folded", key=key, style=style, show=False,
-        )
-    if choice == "fig6":
-        return folded_line(
-            counts, groups, group_colors, start_zt, period_i,
-            lo=0, hi=ld_end_i, death_bins=death_bins,
-            title="LD (24 h-folded) mean ± 1 SD",
-            key=key, style=style, show=False,
-        )
-    if choice == "fig7":
-        return full_period_bar(
-            counts, groups, group_colors, start_zt, period_i,
-            lo=ld_end_i, hi=None, ld_end=ld_end_i,
-            title="Full DD period, averaged across mosquitoes",
-            xlabel="Experimental hour", key=key, means_override=means_death,
-            style=style, show=False,
-        )
-    if choice == "fig8":
-        return folded_bar(
-            counts, groups, group_colors, start_zt, period_i,
-            lo=ld_end_i, hi=None, death_bins=death_bins,
-            title="DD, 24 h-folded", key=key, style=style, show=False,
-        )
-    if choice == "fig9":
-        return folded_line(
-            counts, groups, group_colors, start_zt, period_i,
-            lo=ld_end_i, hi=None, death_bins=death_bins,
-            title="DD (24 h-folded) mean ± 1 SD",
-            key=key, style=style, show=False,
-        )
-    if choice == "fig10_bars":
-        return phase_totals_figure(
-            totals, groups, group_colors, style, key=key, show=False,
-        )
-    if choice == "fig10_box":
-        return phase_totals_box_figure(totals, groups, style, key=key, show=False)
-    raise ValueError(f"Unknown compare choice: {choice}")
-
-
-COMPARE_LABELS = {
-    "fig3": "Fig 3 — Death comparison",
-    "fig4": "Fig 4 — Full LD period",
-    "fig5": "Fig 5 — LD, 24 h-folded",
-    "fig6": "Fig 6 — LD mean ± 1 SD",
-    "fig7": "Fig 7 — Full DD period",
-    "fig8": "Fig 8 — DD, 24 h-folded",
-    "fig9": "Fig 9 — DD mean ± 1 SD",
-    "fig10_bars": "Section D — Mean ± 1 SD by phase",
-    "fig10_box": "Section D — Per-mosquito boxplots",
-}
-
-
 def render_activity_graphs_body(settings: dict) -> None:
     """Main panel for all activity figures."""
     uploaded = settings["uploaded"]
@@ -2106,30 +1585,30 @@ def render_activity_graphs_body(settings: dict) -> None:
     ld_end_i = int(ld_end)
     max_frames = max((len(f) for f in data["frames"]), default=0)
 
-    groups, group_colors, deaths = render_group_and_death_controls(
+    groups, group_colors, deaths, excluded = render_group_and_death_controls(
         n_mosq, max_frames
     )
     if not groups:
         st.warning("Define at least one valid group row to see plots.")
         return
-    idx_to_label = build_idx_to_label(groups)
+    # Death calls map (group, mosquito #) → index, so resolve them against the
+    # full groups before exclusions shift within-group positions.
     death_bins = death_bin_by_idx(deaths, groups, int(bin_size))
+    groups, group_colors = apply_mosquito_exclusions(groups, group_colors, excluded)
+    if not groups:
+        st.warning("Every mosquito is excluded — clear some exclusions to see plots.")
+        return
+    idx_to_label = build_idx_to_label(groups)
 
-    sec_a, sec_b, sec_c, sec_d, sec_e = st.tabs(
+    sec_a, sec_b, sec_c = st.tabs(
         [
             "Section A — General",
             "Section B — LD",
             "Section C — DD",
-            "Section D — Day/night totals",
-            "Section E — Compare / mix",
         ]
     )
 
     means_death: dict = {}
-    # Precompute totals for Section D + Compare (cheap relative to plotting)
-    totals = phase_totals_table(
-        counts, groups, death_bins, start_zt, period_i, ld_end_i
-    )
 
     with sec_a:
         s_fig1 = fig_header(
@@ -2192,12 +1671,12 @@ def render_activity_graphs_body(settings: dict) -> None:
         )
 
     with sec_b:
-        with st.expander("About LD (light–dark)", expanded=False):
-            st.markdown(
-                "**LD** = bins before the LD→DD switch.\n\n"
-                "- **Day** = unshaded ZT half (ZT 0 – period/2)\n"
-                "- **Night** = grey band (ZT period/2 – period)"
-            )
+        help_popover(
+            "**LD** = bins before the LD→DD switch.\n\n"
+            "- **Day** = unshaded ZT half (ZT 0 – period/2)\n"
+            "- **Night** = grey band (ZT period/2 – period)",
+            label="❓ About LD (light–dark)",
+        )
         s_fig4 = fig_header(
             "Fig 4 — Full LD period",
             fig_id="fig4",
@@ -2266,13 +1745,13 @@ def render_activity_graphs_body(settings: dict) -> None:
                 g: group_mean_trace(counts, groups[g], death_bins, start_zt, 0.0)
                 for g in groups
             }
-        with st.expander("About DD (dark–dark)", expanded=False):
-            st.markdown(
-                "**DD** = bins after the LD→DD switch (lights stay off).\n\n"
-                "- **DD subjective day / night** use the same ZT halves as the grey bands "
-                "(not actual light)\n"
-                "- Subjective day = unshaded, subjective night = grey"
-            )
+        help_popover(
+            "**DD** = bins after the LD→DD switch (lights stay off).\n\n"
+            "- **DD subjective day / night** use the same ZT halves as the grey bands "
+            "(not actual light)\n"
+            "- Subjective day = unshaded, subjective night = grey",
+            label="❓ About DD (dark–dark)",
+        )
         s_fig7 = fig_header(
             "Fig 7 — Full DD period",
             fig_id="fig7",
@@ -2332,212 +1811,3 @@ def render_activity_graphs_body(settings: dict) -> None:
             title="DD (24 h-folded) mean ± 1 SD", key="fig9",
             style=s_fig9,
         )
-
-    with sec_d:
-        st.markdown("### Total distance — day vs night × LD / DD")
-        ld_bins = max(0, min(ld_end_i, trace_len))
-        dd_bins = max(0, trace_len - ld_end_i)
-        if dd_bins and ld_bins:
-            st.caption(
-                f"Summed totals · ~{ld_bins} h LD vs ~{dd_bins} h DD "
-                "(unequal windows — compare ratios, not raw LD vs DD heights). "
-                "LD day/night = actual light schedule · "
-                "DD subjective day/night = same ZT halves with lights off · "
-                "death cuts stop summing · no-data phases are blank (NaN)."
-            )
-
-        totals_display = totals.copy()
-        totals_display["group"] = totals_display["group"].map(style.display_group)
-
-        s_fig10_phase = fig_header(
-            "Mean ± 1 SD by phase",
-            fig_id="fig10_phase",
-            base_style=style,
-            level="####",
-            customize=True,
-            what="Group mean total distance ± 1 SD for each phase.",
-            how="Error bars floored at 0.",
-        )
-        phase_totals_figure(totals, groups, group_colors, s_fig10_phase, key="fig10_phase")
-
-        s_fig10_box = fig_header(
-            "Per-mosquito distribution",
-            fig_id="fig10_box",
-            base_style=style,
-            level="####",
-            customize=True,
-            what="Box + individual mosquito points per phase.",
-            how="Shows spread / outliers behind the means.",
-        )
-        phase_totals_box_figure(totals, groups, s_fig10_box, key="fig10_box")
-
-        with st.expander("Per-mosquito totals", expanded=False):
-            show_cols = [c for c in totals_display.columns if c != "mosquito_idx"]
-            st.dataframe(
-                totals_display[show_cols].round(1),
-                use_container_width=True,
-            )
-            st.download_button(
-                "Download CSV",
-                data=totals_display[show_cols].to_csv(index=False),
-                file_name="phase_totals_per_mosquito.csv",
-                mime="text/csv",
-                key="dl_phase_totals",
-            )
-
-        summary = phase_summary_by_group(totals)
-        summary_display = summary.copy()
-        summary_display["group"] = summary_display["group"].map(style.display_group)
-        with st.expander("Group means ± 1 SD", expanded=False):
-            st.dataframe(summary_display.round(2), use_container_width=True)
-
-        fig_header(
-            "Within-group: day vs night",
-            fig_id="fig10_within",
-            base_style=style,
-            level="####",
-            customize=False,
-            what="Paired day vs night within each group (LD and DD).",
-            how=stats_glossary_help(),
-        )
-        within = within_group_day_night_tests(totals)
-        within_display = within.copy()
-        within_display["group"] = within_display["group"].map(style.display_group)
-        within_display["p"] = within_display["p"].map(
-            lambda p: f"{p:.4g}" if np.isfinite(p) else "n/a"
-        )
-        st.dataframe(within_display, use_container_width=True)
-
-        s_fig10_heat = fig_header(
-            "Between-group comparisons",
-            fig_id="fig10_heat",
-            base_style=style,
-            level="####",
-            customize=True,
-            what="Kruskal–Wallis + pairwise Mann–Whitney (heatmap).",
-            how=stats_glossary_help(),
-        )
-        between = between_group_phase_tests(totals)
-        stats_heatmap_figure(between, s_fig10_heat, key="fig10_heat")
-        with st.expander("Between-group stats table", expanded=False):
-            between_display = between.copy()
-            between_display["p"] = between_display["p"].map(
-                lambda p: f"{p:.4g}" if np.isfinite(p) else "n/a"
-            )
-            st.dataframe(between_display, use_container_width=True)
-        st.download_button(
-            "Download stats CSV",
-            data=pd.concat(
-                [
-                    within.assign(kind="within day vs night"),
-                    between.assign(kind="between groups"),
-                ],
-                ignore_index=True,
-            ).to_csv(index=False),
-            file_name="phase_totals_stats.csv",
-            mime="text/csv",
-            key="dl_phase_stats",
-        )
-
-    with sec_e:
-        fig_header(
-            "Compare / mix two graphs",
-            fig_id="compare_mix",
-            base_style=style,
-            customize=False,
-            what="Pick any two figures to view side-by-side or stacked, then download as one PNG.",
-            how="""
-- Uses the **Plot style** controls in the sidebar.
-- Best for related plots (e.g. LD folded vs DD folded, or mean bars vs boxplots).
-- Individual actograms (Figs 1–2) are omitted here because they are multi-page grids.
-""",
-            ask="Which two views tell the cleanest LD vs DD story for this experiment?",
-        )
-        if not means_death:
-            means_death = {
-                g: group_mean_trace(counts, groups[g], death_bins, start_zt, 0.0)
-                for g in groups
-            }
-
-        choice_ids = list(COMPARE_LABELS.keys())
-        labels = [COMPARE_LABELS[k] for k in choice_ids]
-        c1, c2, c3 = st.columns([2, 2, 1.2])
-        with c1:
-            left_label = st.selectbox(
-                "Left / top graph",
-                labels,
-                index=labels.index(COMPARE_LABELS["fig5"]),
-                key="compare_left",
-            )
-        with c2:
-            right_label = st.selectbox(
-                "Right / bottom graph",
-                labels,
-                index=labels.index(COMPARE_LABELS["fig8"]),
-                key="compare_right",
-            )
-        with c3:
-            layout = st.radio(
-                "Layout",
-                ["side-by-side", "stacked"],
-                horizontal=False,
-                key="compare_layout",
-            )
-
-        left_id = choice_ids[labels.index(left_label)]
-        right_id = choice_ids[labels.index(right_label)]
-
-        try:
-            fig_left = build_selected_figure(
-                left_id,
-                counts=counts,
-                groups=groups,
-                group_colors=group_colors,
-                start_zt=start_zt,
-                period_i=period_i,
-                ld_end_i=ld_end_i,
-                death_bins=death_bins,
-                means_death=means_death,
-                totals=totals,
-                style=style,
-            )
-            fig_right = build_selected_figure(
-                right_id,
-                counts=counts,
-                groups=groups,
-                group_colors=group_colors,
-                start_zt=start_zt,
-                period_i=period_i,
-                ld_end_i=ld_end_i,
-                death_bins=death_bins,
-                means_death=means_death,
-                totals=totals,
-                style=style,
-            )
-        except Exception as exc:
-            st.error(f"Could not build compare view: {exc}")
-        else:
-            col_l, col_r = st.columns(2)
-            with col_l:
-                st.markdown(f"**{COMPARE_LABELS[left_id]}**")
-                st.pyplot(fig_left)
-            with col_r:
-                st.markdown(f"**{COMPARE_LABELS[right_id]}**")
-                st.pyplot(fig_right)
-
-            combined = stitch_figures(fig_left, fig_right, layout=layout)
-            st.download_button(
-                "Download combined PNG",
-                data=combined,
-                file_name=f"compare_{left_id}_{right_id}.png",
-                mime="image/png",
-                key="compare_download",
-            )
-            plt.close(fig_left)
-            plt.close(fig_right)
-
-
-def render_activity_graphs() -> None:
-    """Backward-compatible wrapper."""
-    settings = render_graphs_sidebar()
-    render_activity_graphs_body(settings)

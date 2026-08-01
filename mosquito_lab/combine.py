@@ -22,7 +22,6 @@ import math
 from dataclasses import dataclass, field
 
 import numpy as np
-import pandas as pd
 
 # Regrouping order — same as the combined notebooks.
 TYPE_ORDER = ["Female KO", "Male KO", "Female sg (WT)", "Male sg (WT)"]
@@ -33,8 +32,6 @@ DEFAULT_TYPE_COLORS = {
     "Female KO": "#f4a261",
     "Male KO": "#2a9d8f",
 }
-
-PHASE_ORDER = ("LD day", "LD night", "DD subjective day", "DD subjective night")
 
 
 @dataclass
@@ -258,66 +255,3 @@ def combine_experiments(specs: list[ExperimentSpec], period: int = 24) -> Combin
     )
 
 
-def _classify(bin_idx: int, period: int, ld_end: int) -> str:
-    """Same ZT bands as the grey shading, with a per-mosquito LD→DD boundary.
-
-    In DD, day/night are subjective (lights stay off).
-    """
-    zt = bin_idx % period
-    is_day = zt < (period / 2)
-    if bin_idx >= ld_end:
-        return "DD subjective day" if is_day else "DD subjective night"
-    return "LD day" if is_day else "LD night"
-
-
-def phase_totals_combined(
-    counts: list,
-    groups: dict,
-    death_bins: dict,
-    ld_end_by_idx: dict,
-    period: int,
-) -> pd.DataFrame:
-    """Per-mosquito summed distance by LD/DD x day/night (per-mosquito boundary).
-
-    Same schema as ``activity_plots.phase_totals_table``. Phases with no live
-    bins are ``NaN`` (not 0) so early deaths don't dilute DD group means.
-    """
-    rows: list[dict] = []
-    for group_name, indices in groups.items():
-        for j, idx in enumerate(indices):
-            totals = {phase: 0.0 for phase in PHASE_ORDER}
-            hours = {phase: 0 for phase in PHASE_ORDER}
-            d = death_bins.get(idx)
-            death = math.floor(d) if d is not None else math.inf
-            le = ld_end_by_idx[idx]
-            for i, val in enumerate(counts[idx]):
-                if i >= death:
-                    break
-                if not np.isfinite(val):
-                    continue
-                phase = _classify(i, period, le)
-                totals[phase] += float(val)
-                hours[phase] += 1
-            for phase in PHASE_ORDER:
-                if hours[phase] == 0:
-                    totals[phase] = float("nan")
-
-            def _sum_or_nan(a: float, b: float) -> float:
-                arr = np.asarray([a, b], dtype=float)
-                if not np.any(np.isfinite(arr)):
-                    return float("nan")
-                return float(np.nansum(arr))
-
-            rows.append(
-                {
-                    "group": group_name,
-                    "mosquito": j + 1,
-                    "mosquito_idx": idx,
-                    **totals,
-                    "LD total": _sum_or_nan(totals["LD day"], totals["LD night"]),
-                    "DD total": _sum_or_nan(
-                        totals["DD subjective day"], totals["DD subjective night"]
-                    ),
-                }
-            )
-    return pd.DataFrame(rows)

@@ -47,6 +47,36 @@ def get_passcode() -> str | None:
     return None
 
 
+def is_hosted() -> bool:
+    """True on the hosted (Streamlit Community Cloud) deployment.
+
+    Frame images + Detection inspector need the full raw-frame folder on local
+    disk, which isn't practical on Cloud's ephemeral storage, so we hide them
+    there and show only Activity graphs + Combine (CSV-only, cheap to load).
+
+    Detection is automatic, but can be forced either way with MOSBOT_HOSTED
+    (env var or Streamlit secret): "1"/"true" = hosted, "0"/"false" = full app.
+    """
+    override = (os.environ.get("MOSBOT_HOSTED") or "").strip().lower()
+    if not override:
+        try:
+            if "MOSBOT_HOSTED" in st.secrets:
+                override = str(st.secrets["MOSBOT_HOSTED"]).strip().lower()
+        except Exception:
+            override = ""
+    if override in ("1", "true", "yes", "on"):
+        return True
+    if override in ("0", "false", "no", "off"):
+        return False
+
+    # Auto-detect Streamlit Community Cloud (apps run from /mount/src as appuser).
+    if "/mount/src" in str(Path(__file__).resolve()) or os.path.isdir("/mount/src"):
+        return True
+    if (os.environ.get("HOSTNAME") or "").lower().startswith("streamlit"):
+        return True
+    return False
+
+
 def check_auth(passcode: str | None) -> bool:
     if st.session_state.get("authenticated"):
         return True
@@ -62,10 +92,13 @@ def check_auth(passcode: str | None) -> bool:
         )
         return False
 
-    st.caption(
-        "Frame viewer, detection inspector, and activity graphs. "
-        "Enter the passcode to continue."
-    )
+    if is_hosted():
+        st.caption("Activity graphs and combine experiments. Enter the passcode to continue.")
+    else:
+        st.caption(
+            "Frame viewer, detection inspector, and activity graphs. "
+            "Enter the passcode to continue."
+        )
     with st.form("passcode_form", clear_on_submit=False, border=False):
         entered = st.text_input("Passcode", type="password", key="passcode_input")
         submitted = st.form_submit_button("Unlock", type="primary")
@@ -87,11 +120,32 @@ def main() -> None:
     paths = resolve_paths()
 
     st.sidebar.title("mosbot")
+
+    hosted = is_hosted()
+    if hosted:
+        # Frame images + Detection inspector need the raw-frame folder on local
+        # disk, which isn't practical on Cloud — show only the CSV-based sections.
+        sections = ["Activity graphs", "Combine experiments"]
+        radio_help = "Plot activity or combine experiments."
+    else:
+        sections = [
+            "Frame images",
+            "Detection inspector",
+            "Activity graphs",
+            "Combine experiments",
+        ]
+        radio_help = "Browse frames, audit YOLO detections, plot activity, or combine experiments."
+
+    # A previously-stored selection may not exist in the current section list
+    # (e.g. switching between local and hosted); reset it so the radio is valid.
+    if st.session_state.get("lab_page") not in sections:
+        st.session_state.pop("lab_page", None)
+
     page = st.sidebar.radio(
         "Section",
-        ["Frame images", "Detection inspector", "Activity graphs", "Combine experiments"],
+        sections,
         key="lab_page",
-        help="Browse frames, audit YOLO detections, plot activity, or combine experiments.",
+        help=radio_help,
     )
 
     cfg = None

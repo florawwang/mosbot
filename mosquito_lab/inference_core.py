@@ -253,12 +253,6 @@ def run_inference(
 
     all_data: dict[str, list[float]] = {}
     frame_manifest: dict[str, Any] = {}
-    global_stats = {
-        "failed_loads": 0,
-        "failed_crops": 0,
-        "failed_detections": 0,
-        "successful_detections": 0,
-    }
 
     for mosquito_num, _ in enumerate(cropper.boxes):
         print("\n===================================")

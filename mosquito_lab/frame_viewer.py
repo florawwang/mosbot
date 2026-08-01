@@ -15,9 +15,7 @@ from PIL import Image
 
 from mosquito_lab.image_util import Cropper
 from mosquito_lab.inference_core import detect_pos_from_crop, draw_overlay, pick_device
-from mosquito_lab.paths import mosquito_project_dir, repo_root
-
-LAB_ROOT = repo_root()
+from mosquito_lab.paths import mosquito_project_dir
 
 
 def resolve_paths() -> dict:
@@ -172,11 +170,6 @@ def render_frame_sidebar(paths: dict) -> dict:
         "live_detect": live_detect,
         "device": device,
     }
-
-
-def sidebar_config(paths: dict) -> dict:
-    """Backward-compatible alias."""
-    return render_frame_sidebar(paths)
 
 
 def render_frame_viewer_body(cfg: dict, paths: dict) -> str:
@@ -403,10 +396,3 @@ def default_activity_csv(paths: dict, cfg: dict) -> str:
     if candidates:
         return str(candidates[0])
     return ""
-
-
-def render_frame_viewer() -> str:
-    """Backward-compatible wrapper."""
-    paths = resolve_paths()
-    cfg = render_frame_sidebar(paths)
-    return render_frame_viewer_body(cfg, paths)

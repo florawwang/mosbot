@@ -1,5 +1,5 @@
 """
-mosbot — frame viewer, detection inspector, and activity graphs.
+mosbot — activity graphs and combine experiments.
 
 Run:
     streamlit run mosquito_lab/lab_app.py --server.port 8502
@@ -23,12 +23,7 @@ import streamlit as st
 
 from mosquito_lab.activity_plots import render_activity_graphs_body, render_graphs_sidebar
 from mosquito_lab.combine_ui import render_combine_body, render_combine_sidebar
-from mosquito_lab.frame_viewer import (
-    render_frame_sidebar,
-    render_frame_viewer_body,
-    resolve_paths,
-)
-from mosquito_lab.inspector.app import render_inspector_body, render_inspector_sidebar
+from mosquito_lab.critters import render_mosquito_swarm
 
 
 def get_passcode() -> str | None:
@@ -47,36 +42,6 @@ def get_passcode() -> str | None:
     return None
 
 
-def is_hosted() -> bool:
-    """True on the hosted (Streamlit Community Cloud) deployment.
-
-    Frame images + Detection inspector need the full raw-frame folder on local
-    disk, which isn't practical on Cloud's ephemeral storage, so we hide them
-    there and show only Activity graphs + Combine (CSV-only, cheap to load).
-
-    Detection is automatic, but can be forced either way with MOSBOT_HOSTED
-    (env var or Streamlit secret): "1"/"true" = hosted, "0"/"false" = full app.
-    """
-    override = (os.environ.get("MOSBOT_HOSTED") or "").strip().lower()
-    if not override:
-        try:
-            if "MOSBOT_HOSTED" in st.secrets:
-                override = str(st.secrets["MOSBOT_HOSTED"]).strip().lower()
-        except Exception:
-            override = ""
-    if override in ("1", "true", "yes", "on"):
-        return True
-    if override in ("0", "false", "no", "off"):
-        return False
-
-    # Auto-detect Streamlit Community Cloud (apps run from /mount/src as appuser).
-    if "/mount/src" in str(Path(__file__).resolve()) or os.path.isdir("/mount/src"):
-        return True
-    if (os.environ.get("HOSTNAME") or "").lower().startswith("streamlit"):
-        return True
-    return False
-
-
 def check_auth(passcode: str | None) -> bool:
     if st.session_state.get("authenticated"):
         return True
@@ -92,16 +57,16 @@ def check_auth(passcode: str | None) -> bool:
         )
         return False
 
-    if is_hosted():
-        st.caption("Activity graphs and combine experiments. Enter the passcode to continue.")
-    else:
-        st.caption(
-            "Frame viewer, detection inspector, and activity graphs. "
-            "Enter the passcode to continue."
-        )
+    st.caption("Activity graphs and combine experiments. Enter the passcode to continue.")
     with st.form("passcode_form", clear_on_submit=False, border=False):
         entered = st.text_input("Passcode", type="password", key="passcode_input")
         submitted = st.form_submit_button("Unlock", type="primary")
+    st.toggle(
+        "🦟 Mosquito mode",
+        value=True,
+        key="mosquitoes_on",
+        help="Turn the roaming mosquitoes and the mosquito cursor on or off.",
+    )
     if submitted:
         if entered == passcode:
             st.session_state["authenticated"] = True
@@ -113,66 +78,34 @@ def check_auth(passcode: str | None) -> bool:
 
 def main() -> None:
     st.set_page_config(page_title="mosbot", layout="wide", page_icon="🦟")
+    # Mosquito cursor + a few roaming mosquitoes 🦟 (toggle lives on the login
+    # screen and in the sidebar, both keyed "mosquitoes_on"; default on).
+    render_mosquito_swarm(enabled=st.session_state.get("mosquitoes_on", True))
 
     if not check_auth(get_passcode()):
         return
 
-    paths = resolve_paths()
-
     st.sidebar.title("mosbot")
-
-    hosted = is_hosted()
-    if hosted:
-        # Frame images + Detection inspector need the raw-frame folder on local
-        # disk, which isn't practical on Cloud — show only the CSV-based sections.
-        sections = ["Activity graphs", "Combine experiments"]
-        radio_help = "Plot activity or combine experiments."
-    else:
-        sections = [
-            "Frame images",
-            "Detection inspector",
-            "Activity graphs",
-            "Combine experiments",
-        ]
-        radio_help = "Browse frames, audit YOLO detections, plot activity, or combine experiments."
-
-    # A previously-stored selection may not exist in the current section list
-    # (e.g. switching between local and hosted); reset it so the radio is valid.
-    if st.session_state.get("lab_page") not in sections:
-        st.session_state.pop("lab_page", None)
-
+    st.sidebar.toggle(
+        "🦟 Mosquito mode",
+        value=True,
+        key="mosquitoes_on",
+        help="Roaming mosquitoes + mosquito cursor.",
+    )
     page = st.sidebar.radio(
         "Section",
-        sections,
+        ["Activity graphs", "Combine experiments"],
         key="lab_page",
-        help=radio_help,
+        help="Plot activity or combine experiments.",
     )
 
-    cfg = None
-    settings = None
-    insp_cfg = None
-    combine_settings = None
-    if page == "Frame images":
-        cfg = render_frame_sidebar(paths)
-    elif page == "Detection inspector":
-        insp_cfg = render_inspector_sidebar()
-    elif page == "Activity graphs":
+    if page == "Activity graphs":
         settings = render_graphs_sidebar()
     else:
         combine_settings = render_combine_sidebar()
 
     st.title("mosbot")
-    if page == "Frame images":
-        st.caption("Browse and download per-frame images with detection overlays.")
-        csv_path = render_frame_viewer_body(cfg, paths)
-        if csv_path:
-            st.session_state["graphs_default_csv"] = csv_path
-    elif page == "Detection inspector":
-        st.caption(
-            "Audit YOLO detections: overlay wells, slide confidence, jump to misses, flag frames."
-        )
-        render_inspector_body(insp_cfg)
-    elif page == "Activity graphs":
+    if page == "Activity graphs":
         st.caption(
             "Activity analysis graphs. Hover the **?** next to a figure title for help; "
             "use the **Plot style** sidebar to change labels, size, or fonts."
